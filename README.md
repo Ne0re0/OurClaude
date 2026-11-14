@@ -224,3 +224,40 @@ Interactive Swagger UI available at `/docs` when the server is running. The spec
 This work is licensed under [Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/).
 
 You are free to share and adapt this work for non-commercial purposes, with appropriate credit.
+## Serving locally compiled CLI binaries
+
+The download and installer endpoints read CLI binaries from the directory set by
+`DIST_DIR`, which is `/usr/local/share/cl` in the Docker Compose deployment.
+To serve binaries compiled on the host, build them and bind-mount `dist/` into
+the container:
+
+```bash
+make ourclaude-all
+```
+
+```yaml
+services:
+  claude-proxy:
+    volumes:
+      - ./dist:/usr/local/share/cl:ro
+```
+
+Recreate the service and verify that the files are visible:
+
+```bash
+docker compose up -d --force-recreate
+docker compose exec claude-proxy ls -lh /usr/local/share/cl
+```
+
+The directory must contain these exact filenames:
+
+```text
+ourclaude-linux-amd64
+ourclaude-linux-arm64
+ourclaude-darwin-amd64
+ourclaude-darwin-arm64
+ourclaude-windows-amd64.exe
+```
+
+The `/dl/{token}` routes and generated install scripts will then serve the
+mounted binaries automatically; no reverse-proxy change is required.
