@@ -410,13 +410,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	const maxRetries = 3
 	var lastErr error
+	attemptedAccountIDs := make(map[uint]struct{}, maxRetries)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		account, err := h.pool.GetAccountForUser(poolIDs)
+		account, err := h.pool.GetAccountForUserExcluding(poolIDs, attemptedAccountIDs)
 		if err != nil {
+			if lastErr != nil {
+				break
+			}
 			writeError(w, http.StatusServiceUnavailable, "no available Claude accounts: "+err.Error())
 			return
 		}
+		attemptedAccountIDs[account.ID] = struct{}{}
 
 		resp, err := h.forward(r, body, account.AccessToken, user)
 		if err != nil {

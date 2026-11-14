@@ -129,16 +129,25 @@ func (m *Manager) StartAutoReset(ctx context.Context, interval time.Duration) {
 // round-robin within that pool. Falls back to single-pool behaviour if only
 // one pool is provided.
 func (m *Manager) GetAccountForUser(poolIDs []uint) (*database.ClaudeAccount, error) {
+	return m.GetAccountForUserExcluding(poolIDs, nil)
+}
+
+// GetAccountForUserExcluding selects the best account while skipping accounts
+// already attempted for the current proxy request.
+func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
 	if len(poolIDs) == 0 {
 		return nil, ErrNoActiveAccounts
 	}
 	if len(poolIDs) == 1 {
-		return m.GetAccountForPool(poolIDs[0])
+		return m.GetAccountForPoolExcluding(poolIDs[0], excluded)
 	}
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	bestPoolID := poolIDs[0]
-	var minUsage int64 = -1
+	type poolUsage struct {
+		id    uint
+		usage int64
+	}
+	pools := make([]poolUsage, 0, len(poolIDs))
 
 	for _, pid := range poolIDs {
 		var usage int64
@@ -148,24 +157,39 @@ func (m *Manager) GetAccountForUser(poolIDs []uint) (*database.ClaudeAccount, er
 			Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", pid, today).
 			Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
 			Row().Scan(&usage)
-		if minUsage < 0 || usage < minUsage {
-			minUsage = usage
-			bestPoolID = pid
+		pools = append(pools, poolUsage{id: pid, usage: usage})
+	}
+
+	sort.Slice(pools, func(i, j int) bool { return pools[i].usage < pools[j].usage })
+	for _, candidate := range pools {
+		account, err := m.GetAccountForPoolExcluding(candidate.id, excluded)
+		if err == nil {
+			return account, nil
+		}
+		if !errors.Is(err, ErrNoActiveAccounts) {
+			return nil, err
 		}
 	}
 
-	return m.GetAccountForPool(bestPoolID)
+	return nil, ErrNoActiveAccounts
 }
 
 // GetAccountForPool returns the next active account for the given pool.
 // Priority: active OAuth → active API keys (fallback) → exhausted OAuth (last resort).
 func (m *Manager) GetAccountForPool(poolID uint) (*database.ClaudeAccount, error) {
+	return m.GetAccountForPoolExcluding(poolID, nil)
+}
+
+// GetAccountForPoolExcluding is GetAccountForPool with a per-request exclusion
+// set, used to ensure a retry actually moves to another account.
+func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
 	var accounts []database.ClaudeAccount
 	if err := m.db.Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
 		Where("account_pools.pool_id = ? AND claude_accounts.status != ?", poolID, "error").
 		Find(&accounts).Error; err != nil {
 		return nil, err
 	}
+	accounts = filterExcluded(accounts, excluded)
 
 	// 1. Try active OAuth accounts first (scored pick: drain mode / reset-aware)
 	oauthActive := filterByTypeAndStatus(accounts, "oauth", "active")
@@ -190,6 +214,7 @@ func (m *Manager) GetAccountForPool(poolID uint) (*database.ClaudeAccount, error
 	m.db.Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
 		Where("account_pools.pool_id = ? AND claude_accounts.status = ? AND claude_accounts.account_type = ?", poolID, "error", "oauth").
 		Find(&errorAccounts)
+	errorAccounts = filterExcluded(errorAccounts, excluded)
 	if len(errorAccounts) > 0 {
 		return m.pickAndValidateSoft(poolID, errorAccounts)
 	}
@@ -264,7 +289,7 @@ func (m *Manager) scoredPick(candidates []database.ClaudeAccount) (*database.Cla
 					minutesUntilReset := time.Until(t).Minutes()
 					if minutesUntilReset > 0 && minutesUntilReset < 30 && q.FiveHourPct < 95 {
 						score *= 0.2 // Heavy bonus — drain this account first
-					} else if minutesUntilReset > 0 && minutesUntilReset < 60 {
+					} else if minutesUntilReset > 0 && minutesUntilReset < 60 && q.FiveHourPct < 95 {
 						score *= 0.5 // Moderate bonus
 					}
 				}
@@ -378,6 +403,19 @@ func filterByTypeAndStatus(accounts []database.ClaudeAccount, accountType, statu
 		}
 		if t == accountType && a.Status == status {
 			result = append(result, a)
+		}
+	}
+	return result
+}
+
+func filterExcluded(accounts []database.ClaudeAccount, excluded map[uint]struct{}) []database.ClaudeAccount {
+	if len(excluded) == 0 {
+		return accounts
+	}
+	result := make([]database.ClaudeAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if _, skip := excluded[account.ID]; !skip {
+			result = append(result, account)
 		}
 	}
 	return result
