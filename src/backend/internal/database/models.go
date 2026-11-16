@@ -97,6 +97,9 @@ type UsageLog struct {
 	LatencyMs    int       `json:"latency_ms"`
 	TTFTMs       int       `json:"ttft_ms"` // 0 if non-streaming
 	CreatedAt    time.Time `gorm:"index" json:"created_at"`
+	// ConversationID is the ConversationLog captured for this request, if any.
+	// Conversation IDs are a separate sequence, so clients must not use ID.
+	ConversationID *uint `gorm:"-" json:"conversation_id,omitempty"`
 }
 
 type WebhookConfig struct {

@@ -290,13 +290,17 @@ export default function Logs() {
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-center">
-                    <button
-                      title="View conversation"
-                      onClick={() => setViewConvId(log.id)}
-                      className="p-1 text-gray-300 hover:text-brand-500 dark:text-gray-600 dark:hover:text-brand-400 rounded transition-colors"
-                    >
-                      <MessageSquare className="w-4 h-4" />
-                    </button>
+                    {log.conversation_id ? (
+                      <button
+                        title="View conversation"
+                        onClick={() => setViewConvId(log.conversation_id!)}
+                        className="p-1 text-gray-300 hover:text-brand-500 dark:text-gray-600 dark:hover:text-brand-400 rounded transition-colors"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <span className="text-gray-300 dark:text-gray-600" title="No conversation captured for this request">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -17,10 +17,18 @@ import (
 	"codex-proxy/internal/server"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // setupServer creates an in-memory test server with SQLite :memory: DB.
 func setupServer(t *testing.T) (*httptest.Server, *config.Config) {
+	t.Helper()
+	ts, cfg, _ := setupServerDB(t)
+	return ts, cfg
+}
+
+// setupServerDB is setupServer that also returns the database for seeding.
+func setupServerDB(t *testing.T) (*httptest.Server, *config.Config, *gorm.DB) {
 	t.Helper()
 
 	cfg := &config.Config{
@@ -51,7 +59,7 @@ func setupServer(t *testing.T) (*httptest.Server, *config.Config) {
 	ts := httptest.NewServer(srv.SetupAdminRouter())
 	t.Cleanup(ts.Close)
 
-	return ts, cfg
+	return ts, cfg, db
 }
 
 func postJSON(t *testing.T, ts *httptest.Server, path string, body interface{}, cookies []*http.Cookie) *http.Response {
@@ -542,5 +550,54 @@ func TestStatsExportCSV(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
 		t.Errorf("expected text/csv, got %s", ct)
+	}
+}
+
+// Conversation logs are numbered independently of usage logs (only some
+// requests capture one), so the logs page must open them by conversation_id.
+func TestUsageLogsLinkToTheirConversation(t *testing.T) {
+	ts, _, db := setupServerDB(t)
+	cookies := login(t, ts)
+
+	user := database.User{Name: "dev", APIToken: "sk-proxy-conversations"}
+	db.Create(&user)
+	var withConversation database.UsageLog
+	for i := 0; i < 3; i++ { // usage logs without a conversation shift the sequences apart
+		entry := database.UsageLog{UserID: user.ID, AccountID: 1, Endpoint: "/proxy/v1/responses", StatusCode: 403}
+		db.Create(&entry)
+	}
+	withConversation = database.UsageLog{UserID: user.ID, AccountID: 1, Endpoint: "/proxy/v1/responses", StatusCode: 200, InputTokens: 10, OutputTokens: 2}
+	db.Create(&withConversation)
+	conversation := database.ConversationLog{UserID: user.ID, UsageLogID: &withConversation.ID, MessagesJSON: `[]`, ResponseText: "hello"}
+	db.Create(&conversation)
+	if conversation.ID == withConversation.ID {
+		t.Fatalf("test setup: IDs must differ to reproduce the bug")
+	}
+
+	resp := getJSON(t, ts, "/api/admin/stats/usage", cookies)
+	defer resp.Body.Close()
+	var page struct {
+		Logs []database.UsageLog `json:"logs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range page.Logs {
+		switch {
+		case entry.ID == withConversation.ID && (entry.ConversationID == nil || *entry.ConversationID != conversation.ID):
+			t.Fatalf("usage log %d: conversation_id = %v, want %d", entry.ID, entry.ConversationID, conversation.ID)
+		case entry.ID != withConversation.ID && entry.ConversationID != nil:
+			t.Fatalf("usage log %d has no conversation but got conversation_id %d", entry.ID, *entry.ConversationID)
+		}
+	}
+
+	detail := getJSON(t, ts, fmt.Sprintf("/api/admin/conversations/%d", conversation.ID), cookies)
+	defer detail.Body.Close()
+	var body struct {
+		Response string `json:"response"`
+	}
+	json.NewDecoder(detail.Body).Decode(&body)
+	if detail.StatusCode != http.StatusOK || body.Response != "hello" {
+		t.Fatalf("conversation detail: status %d, response %q", detail.StatusCode, body.Response)
 	}
 }

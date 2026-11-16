@@ -366,6 +366,8 @@ export interface UsageLog {
   latency_ms: number
   ttft_ms: number
   created_at: string
+  /** ID of the captured conversation; a separate sequence from `id`. */
+  conversation_id?: number
 }
 
 export interface OverviewStats {

@@ -800,6 +800,27 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 		return outcome
 	}
 
+	// Save conversation log only for successful requests with actual content.
+	// It is saved before the live-log publish so the published entry carries
+	// the conversation's own ID.
+	if len(messagesJSON) > 0 && messagesJSON != "null" && statusCode == 200 && (inputTokens > 0 || outputTokens > 0) && responseText.Len() > 0 {
+		logID := entry.ID
+		conversation := database.ConversationLog{
+			UserID:       userID,
+			UsageLogID:   &logID,
+			Model:        model,
+			MessagesJSON: messagesJSON,
+			ResponseText: responseText.String(),
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		}
+		if err := db.Create(&conversation).Error; err != nil {
+			log.Printf("failed to log conversation (user=%d, usage=%d): %v", userID, entry.ID, err)
+		} else {
+			entry.ConversationID = &conversation.ID
+		}
+	}
+
 	if logStream != nil {
 		if raw, err := json.Marshal(entry); err == nil {
 			logStream.Publish(raw)
@@ -814,20 +835,6 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 			"model":         model,
 		})
 		statsStream.Publish(evt)
-	}
-
-	// Save conversation log only for successful requests with actual content
-	if len(messagesJSON) > 0 && messagesJSON != "null" && statusCode == 200 && (inputTokens > 0 || outputTokens > 0) && responseText.Len() > 0 {
-		logID := entry.ID
-		db.Create(&database.ConversationLog{
-			UserID:       userID,
-			UsageLogID:   &logID,
-			Model:        model,
-			MessagesJSON: messagesJSON,
-			ResponseText: responseText.String(),
-			InputTokens:  inputTokens,
-			OutputTokens: outputTokens,
-		})
 	}
 	return outcome
 }

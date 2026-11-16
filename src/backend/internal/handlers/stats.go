@@ -182,6 +182,7 @@ func (h *StatsHandler) Usage(w http.ResponseWriter, r *http.Request) {
 
 	var logs []database.UsageLog
 	q.Offset((page - 1) * limit).Limit(limit).Find(&logs)
+	attachConversationIDs(h.db, logs)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"total": total,
@@ -189,6 +190,33 @@ func (h *StatsHandler) Usage(w http.ResponseWriter, r *http.Request) {
 		"limit": limit,
 		"logs":  logs,
 	})
+}
+
+// attachConversationIDs sets ConversationID on each usage log that has a
+// captured conversation, so the dashboard opens the conversation by its own ID.
+func attachConversationIDs(db *gorm.DB, logs []database.UsageLog) {
+	if len(logs) == 0 {
+		return
+	}
+	usageIDs := make([]uint, len(logs))
+	for i, l := range logs {
+		usageIDs[i] = l.ID
+	}
+	var conversations []database.ConversationLog
+	if err := db.Select("id", "usage_log_id").Where("usage_log_id IN ?", usageIDs).Find(&conversations).Error; err != nil {
+		return
+	}
+	byUsage := make(map[uint]uint, len(conversations))
+	for _, c := range conversations {
+		if c.UsageLogID != nil {
+			byUsage[*c.UsageLogID] = c.ID
+		}
+	}
+	for i := range logs {
+		if id, ok := byUsage[logs[i].ID]; ok {
+			logs[i].ConversationID = &id
+		}
+	}
 }
 
 // GET /api/admin/stats/export — download all usage logs as CSV
