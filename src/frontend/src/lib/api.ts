@@ -114,6 +114,10 @@ export const accountsApi = {
   unlink:      (id: number, poolId?: number) => del<void>(`/admin/accounts/${id}/pool${poolId ? `?pool_id=${poolId}` : ''}`),
   quota:       (id: number) => get<unknown>(`/admin/accounts/${id}/quota`),
   toggle:      (id: number) => post<{ status: string }>(`/admin/accounts/${id}/toggle`),
+  startOAuthConnect: (body: { name: string; pool_ids: number[] }) =>
+                 post<OAuthConnectStart>('/admin/accounts/oauth-connect', body),
+  oauthConnectStatus: (id: number) =>
+                 get<OAuthConnectStatus>(`/admin/accounts/oauth-connect/${id}`),
 }
 
 // Stats
@@ -301,6 +305,7 @@ export interface Account {
   id: number
   pools?: Pool[]
   account_type?: 'oauth' | 'apikey'
+  oauth_provider?: 'codex' | 'siwc'
   name: string
   status: 'active' | 'exhausted' | 'error' | 'disabled'
   last_error?: string
@@ -308,6 +313,19 @@ export interface Account {
   last_used_at?: string
   owner_user_id?: number
   created_at: string
+}
+
+export interface OAuthConnectStart {
+  id: number
+  token: string
+  expires_at: string
+}
+
+export interface OAuthConnectStatus {
+  id: number
+  status: 'pending' | 'completed' | 'expired'
+  expires_at: string
+  account_id?: number
 }
 
 export interface User {

@@ -153,6 +153,8 @@ func (s *Server) SetupAdminRouter() http.Handler {
 
 		// Accounts
 		accountsH := handlers.NewAccountsHandler(s.db, s.enc, s.oauth, s.poolMgr, s.cfg)
+		r.Post("/api/admin/accounts/oauth-connect", accountsH.StartOAuthConnect)
+		r.Get("/api/admin/accounts/oauth-connect/{id}", accountsH.OAuthConnectStatus)
 		r.Get("/api/admin/accounts", accountsH.List)
 		r.Post("/api/admin/accounts", accountsH.Create)
 		r.Get("/api/admin/accounts/{id}", accountsH.Get)
@@ -273,6 +275,8 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	// Public pre-auth account import (uses setup token, no admin JWT)
 	publicAccountsH := handlers.NewAccountsHandler(s.db, s.enc, s.oauth, s.poolMgr, s.cfg)
 	r.Post("/api/import/{token}", publicAccountsH.PublicImport)
+	r.Get("/api/oauth/connect", publicAccountsH.OAuthConnectInfo)
+	r.Post("/api/oauth/connect", publicAccountsH.CompleteOAuthConnect)
 
 	// User self-service (authenticated with sk-proxy-* token, not admin JWT)
 	userSelfH := handlers.NewUserSelfHandler(s.db, s.cfg.DistDir, s.enc)

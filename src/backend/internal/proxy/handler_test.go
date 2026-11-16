@@ -18,7 +18,7 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 		accountID string
 		body      string
 	}
-	requests := make(chan observed, 2)
+	requests := make(chan observed, 3)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		requests <- observed{
@@ -54,6 +54,11 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 		{
 			name:     "api key",
 			account:  database.CodexAccount{AccountType: "apikey", AccessToken: "sk-test"},
+			wantPath: "/v1/responses?stream=true",
+		},
+		{
+			name:     "sign in with chatgpt",
+			account:  database.CodexAccount{AccountType: "oauth", OAuthProvider: "siwc", AccessToken: "siwc-token", ChatGPTAccountID: "must-not-be-sent"},
 			wantPath: "/v1/responses?stream=true",
 		},
 	} {

@@ -69,6 +69,9 @@ func (h *AccountsHandler) upsertOAuthAccount(name string, creds oauth.Credential
 			"o_auth_issuer":         creds.Issuer,
 			"o_auth_client_id":      creds.ClientID,
 			"o_auth_login_owner_id": creds.LoginOwnerID,
+			"o_auth_provider":       "codex",
+			"o_auth_subject":        "",
+			"o_auth_host_id":        "",
 			"expires_at":            creds.ExpiresAt,
 			"status":                "active",
 			"last_error":            "",
@@ -94,6 +97,7 @@ func (h *AccountsHandler) upsertOAuthAccount(name string, creds oauth.Credential
 		OAuthIssuer:       creds.Issuer,
 		OAuthClientID:     creds.ClientID,
 		OAuthLoginOwnerID: creds.LoginOwnerID,
+		OAuthProvider:     "codex",
 		ExpiresAt:         creds.ExpiresAt,
 		Status:            "active",
 		OwnerUserID:       ownerUserID,
@@ -494,7 +498,6 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
 	}
-
 	access, err := h.enc.Decrypt(account.AccessToken)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to decrypt token"))
@@ -503,14 +506,14 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 
 	upstream := h.cfg.OpenAIAPIURL
 	testURL := strings.TrimRight(upstream, "/") + "/models"
-	if account.AccountType == "oauth" {
+	if account.AccountType == "oauth" && account.OAuthProvider != "siwc" {
 		upstream = h.cfg.ChatGPTURL
 		testURL = strings.TrimRight(upstream, "/") + "/models?client_version=0.0.0"
 	}
 	req, _ := http.NewRequest(http.MethodGet, testURL, nil)
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.Header.Set("Accept", "application/json")
-	if account.AccountType == "oauth" && account.ChatGPTAccountID != "" {
+	if account.AccountType == "oauth" && account.OAuthProvider != "siwc" && account.ChatGPTAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
 		req.Header.Set("Originator", "codex_cli_rs")
 		req.Header.Set("User-Agent", "ourcodex-account-test")
@@ -560,6 +563,10 @@ func (h *AccountsHandler) Credentials(w http.ResponseWriter, r *http.Request) {
 	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
+		return
+	}
+	if account.OAuthProvider == "siwc" {
+		writeJSON(w, http.StatusBadRequest, errResp("Sign in with ChatGPT credentials are managed by OurCodex and cannot be exported as Codex auth.json"))
 		return
 	}
 

@@ -35,6 +35,9 @@ type CodexAccount struct {
 	OAuthIssuer       string     `json:"-"`
 	OAuthClientID     string     `json:"-"`
 	OAuthLoginOwnerID string     `json:"-"`
+	OAuthProvider     string     `gorm:"default:'codex'" json:"oauth_provider,omitempty"` // codex (legacy auth.json) or siwc
+	OAuthSubject      string     `gorm:"index" json:"-"`                                  // verified OIDC subject for SIWC
+	OAuthHostID       string     `json:"-"`                                               // stable SIWC agent host identifier
 	ExpiresAt         time.Time  `json:"expires_at"`
 	AccountType       string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
 	Status            string     `gorm:"default:'active'" json:"status"`
@@ -42,6 +45,23 @@ type CodexAccount struct {
 	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 	OwnerUserID       *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
 	CreatedAt         time.Time  `json:"created_at"`
+}
+
+// OAuthConnectSession is a short-lived, one-time pairing between an
+// administrator's pool selection and a local OurCodex CLI OAuth flow. Only a
+// hash of the bearer token is stored.
+type OAuthConnectSession struct {
+	ID            uint       `gorm:"primarykey" json:"id"`
+	TokenHash     string     `gorm:"uniqueIndex;not null" json:"-"`
+	Name          string     `gorm:"not null" json:"-"`
+	PoolIDs       string     `gorm:"type:text;not null" json:"-"`
+	HostID        string     `gorm:"not null" json:"-"`
+	AdminID       uint       `gorm:"index" json:"-"`
+	AdminUsername string     `json:"-"`
+	ExpiresAt     time.Time  `gorm:"index;not null" json:"expires_at"`
+	UsedAt        *time.Time `json:"used_at,omitempty"`
+	AccountID     *uint      `gorm:"index" json:"account_id,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 type User struct {

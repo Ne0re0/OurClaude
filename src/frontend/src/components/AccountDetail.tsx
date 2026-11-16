@@ -51,7 +51,7 @@ function StatCard({ label, requests, input, output, cost }: {
 
 function StatusBadge({ status }: { status: string }) {
   if (status === 'active') return <span className="flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-medium"><CheckCircle className="w-3.5 h-3.5" />Active</span>
-  if (status === 'disabled') return <span className="flex items-center gap-1 text-gray-400 text-xs font-medium"><Clock className="w-3.5 h-3.5" />Disabled</span>
+  if (status === 'disabled') return <span title="Manually disabled by an administrator" className="flex items-center gap-1 text-gray-400 text-xs font-medium"><Clock className="w-3.5 h-3.5" />Disabled</span>
   if (status === 'exhausted') return <span className="flex items-center gap-1 text-yellow-600 dark:text-yellow-400 text-xs font-medium"><AlertTriangle className="w-3.5 h-3.5" />Exhausted</span>
   return <span className="flex items-center gap-1 text-red-600 dark:text-red-400 text-xs font-medium"><XCircle className="w-3.5 h-3.5" />Error</span>
 }
@@ -204,7 +204,7 @@ export default function AccountDetail() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{account.name}</h1>
             <span className={`px-2 py-0.5 rounded text-xs font-medium ${isOAuth ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'}`}>
-              {isOAuth ? 'OAuth' : 'API Key'}
+              {isOAuth ? (account.oauth_provider === 'siwc' ? 'ChatGPT sign-in' : 'OAuth (legacy)') : 'API Key'}
             </span>
             <StatusBadge status={account.status} />
           </div>

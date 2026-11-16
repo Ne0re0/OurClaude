@@ -49,6 +49,7 @@ func New(dbType, path, dsn string) (*gorm.DB, error) {
 		&Admin{},
 		&Pool{},
 		&CodexAccount{},
+		&OAuthConnectSession{},
 		&User{},
 		&UsageLog{},
 		&WebhookConfig{},

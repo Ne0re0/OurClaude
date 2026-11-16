@@ -75,7 +75,7 @@ func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, 
 						}
 					}
 					upstreamURL := apiURL
-					if acc.AccountType != "apikey" {
+					if acc.AccountType != "apikey" && acc.OAuthProvider != "siwc" {
 						upstreamURL = chatGPTURL
 					}
 					req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(upstreamURL, "/")+"/models", nil)
@@ -83,7 +83,7 @@ func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, 
 						continue
 					}
 					req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
-					if acc.AccountType != "apikey" && acc.ChatGPTAccountID != "" {
+					if acc.AccountType != "apikey" && acc.OAuthProvider != "siwc" && acc.ChatGPTAccountID != "" {
 						req.Header.Set("ChatGPT-Account-ID", acc.ChatGPTAccountID)
 					}
 					client := &http.Client{Timeout: 10 * time.Second}

@@ -504,7 +504,7 @@ func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexA
 		path = "/"
 	}
 	upstream := h.apiUpstream
-	if account.AccountType != "apikey" {
+	if account.AccountType != "apikey" && account.OAuthProvider != "siwc" {
 		upstream = h.chatGPTUpstream
 	}
 	upstreamURL := upstream + path
@@ -528,7 +528,7 @@ func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexA
 	}
 
 	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
-	if account.AccountType != "apikey" && account.ChatGPTAccountID != "" {
+	if account.AccountType != "apikey" && account.OAuthProvider != "siwc" && account.ChatGPTAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
 	}
 

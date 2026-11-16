@@ -278,6 +278,9 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 			"o_auth_issuer":         creds.Issuer,
 			"o_auth_client_id":      creds.ClientID,
 			"o_auth_login_owner_id": creds.LoginOwnerID,
+			"o_auth_provider":       "codex",
+			"o_auth_subject":        "",
+			"o_auth_host_id":        "",
 			"expires_at":            creds.ExpiresAt,
 			"status":                "active",
 			"last_error":            "",
@@ -301,6 +304,7 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		OAuthIssuer:       creds.Issuer,
 		OAuthClientID:     creds.ClientID,
 		OAuthLoginOwnerID: creds.LoginOwnerID,
+		OAuthProvider:     "codex",
 		ExpiresAt:         creds.ExpiresAt,
 		AccountType:       "oauth",
 		Status:            "active",
@@ -482,6 +486,10 @@ func (h *UserSelfHandler) OwnedAccount(w http.ResponseWriter, r *http.Request) {
 	var account database.CodexAccount
 	if err := h.db.Where("owner_user_id = ?", user.ID).First(&account).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("no owned account"))
+		return
+	}
+	if account.OAuthProvider == "siwc" {
+		writeJSON(w, http.StatusNotFound, errResp("owned account is managed by Sign in with ChatGPT"))
 		return
 	}
 

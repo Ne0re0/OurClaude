@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { accountsApi, poolsApi, usersApi, quotasApi, Account, Pool, User, AccountQuotaData } from '../lib/api'
 import { Link, useNavigate } from 'react-router-dom'
@@ -28,7 +28,7 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel, dange
 
 function StatusBadge({ status }: { status: Account['status'] }) {
   if (status === 'active')    return <span className="flex items-center gap-1 text-green-600 text-sm"><CheckCircle className="w-3.5 h-3.5" />Active</span>
-  if (status === 'disabled')  return <span className="flex items-center gap-1 text-gray-400 text-sm"><Clock className="w-3.5 h-3.5" />Disabled</span>
+  if (status === 'disabled')  return <span title="Manually disabled by an administrator" className="flex items-center gap-1 text-gray-400 text-sm"><Clock className="w-3.5 h-3.5" />Disabled</span>
   if (status === 'exhausted') return <span className="flex items-center gap-1 text-yellow-600 text-sm"><Clock className="w-3.5 h-3.5" />Exhausted</span>
   return <span className="flex items-center gap-1 text-red-600 text-sm"><AlertCircle className="w-3.5 h-3.5" />Error</span>
 }
@@ -86,6 +86,9 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
   const [credJson, setCredJson] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [error, setError] = useState('')
+  const [legacyImport, setLegacyImport] = useState(false)
+  const [connect, setConnect] = useState<{ id: number; token: string; expires_at: string } | null>(null)
+  const [commandCopied, setCommandCopied] = useState(false)
   const qc = useQueryClient()
 
   const mutation = useMutation({
@@ -99,9 +102,43 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
     onError: (e: Error) => setError(e.message),
   })
 
+  const connectMutation = useMutation({
+    mutationFn: () => accountsApi.startOAuthConnect({ name, pool_ids: [...selectedPools] }),
+    onSuccess: result => { setConnect(result); setError('') },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  useEffect(() => {
+    if (!connect) return
+    let stopped = false
+    const poll = async () => {
+      if (stopped) return
+      try {
+        const result = await accountsApi.oauthConnectStatus(connect.id)
+        if (stopped) return
+        if (result.status === 'completed') {
+          stopped = true
+          await qc.invalidateQueries({ queryKey: ['accounts'] })
+          onClose()
+        } else if (result.status === 'expired') {
+          stopped = true
+          setConnect(null)
+          setError('The pairing command expired. Generate a new one and try again.')
+        }
+      } catch (e) {
+        if (!stopped) setError((e as Error).message)
+      }
+    }
+    void poll()
+    const timer = window.setInterval(poll, 2000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [connect?.id])
+
   function switchType(t: 'oauth' | 'apikey') {
     setAccountType(t)
     setCredJson('')
+    setLegacyImport(false)
+    setConnect(null)
     setError('')
   }
 
@@ -115,7 +152,8 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
     }
   }, null, 2)
 
-  const canSubmit = name && (accountType === 'oauth' ? credJson : apiKey)
+  const canSubmit = name && (accountType === 'oauth' ? legacyImport && credJson : apiKey)
+  const connectCommand = connect ? `ourcodex account-login ${window.location.origin} ${connect.token}` : ''
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -148,18 +186,62 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
 
           {accountType === 'oauth' ? (
             <div className="space-y-3">
-              <p className="text-sm text-gray-600 dark:text-gray-400">
-                Run <code className="font-mono">codex login</code> on the account owner's machine, then paste the complete <code className="font-mono">~/.codex/auth.json</code> below.
-              </p>
-              <p className="text-xs text-amber-600 dark:text-amber-400">
-                OAuth refresh tokens rotate. For a pooled account, re-sync the local auth file after a proxy refresh or keep this login dedicated to OurCodex; continuing to refresh an older copy can revoke the token family.
-              </p>
-              <textarea
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono text-xs h-44 resize-none dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
-                value={credJson} onChange={e => setCredJson(e.target.value)}
-                placeholder={placeholder}
-              />
-              <ImportCurlHelper />
+              {!legacyImport ? (
+                <div className="rounded-xl border border-brand-200 dark:border-brand-800 bg-brand-50/60 dark:bg-brand-900/20 p-4 space-y-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800 dark:text-gray-100">Connect your ChatGPT plan securely</p>
+                    <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+                      OurCodex opens OpenAI sign-in on your computer, verifies the returned credentials, and transfers them to this server over HTTPS. No auth.json copy/paste is needed.
+                    </p>
+                  </div>
+                  {!connect ? (
+                    <button
+                      type="button"
+                      onClick={() => connectMutation.mutate()}
+                      disabled={!name || connectMutation.isPending}
+                      className="w-full px-4 py-2.5 bg-black dark:bg-white text-white dark:text-black rounded-lg text-sm font-medium disabled:opacity-50"
+                    >
+                      {connectMutation.isPending ? 'Preparing sign-in...' : 'Generate secure sign-in command'}
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-600 dark:text-gray-400">Run this on the computer where you want the ChatGPT browser to open:</p>
+                      <div className="bg-gray-950 rounded-lg p-3">
+                        <code className="text-xs text-green-400 font-mono break-all">{connectCommand}</code>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { copyToClipboard(connectCommand); setCommandCopied(true); setTimeout(() => setCommandCopied(false), 2000) }}
+                        className="text-xs text-brand-600 dark:text-brand-400 hover:underline"
+                      >{commandCopied ? 'Copied!' : 'Copy command'}</button>
+                      <p className="text-xs text-amber-600 dark:text-amber-400">Waiting for sign-in. This one-time command expires in 15 minutes.</p>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Install the latest OurCodex CLI from <Link to="/downloads" className="text-brand-600 dark:text-brand-400 hover:underline">Downloads</Link> first.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-600 dark:text-gray-400">
+                    Legacy fallback: paste the complete <code className="font-mono">~/.codex/auth.json</code> from an existing Codex CLI login.
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    OAuth refresh tokens rotate. Keep this login dedicated to OurCodex; refreshing an older local copy can revoke the token family.
+                  </p>
+                  <textarea
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono text-xs h-44 resize-none dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
+                    value={credJson} onChange={e => setCredJson(e.target.value)}
+                    placeholder={placeholder}
+                  />
+                  <ImportCurlHelper />
+                </>
+              )}
+              {!connect && (
+                <button type="button" onClick={() => { setLegacyImport(!legacyImport); setError('') }} className="text-xs text-gray-500 dark:text-gray-400 hover:underline">
+                  {legacyImport ? 'Use secure ChatGPT sign-in' : 'Import an existing auth.json instead'}
+                </button>
+              )}
             </div>
           ) : (
             <div>
@@ -182,13 +264,15 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
           <button onClick={onClose} className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-700 dark:text-gray-300">
             Cancel
           </button>
-          <button
-            onClick={() => mutation.mutate()}
-            disabled={!canSubmit || mutation.isPending}
-            className="flex-1 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600 disabled:opacity-50"
-          >
-            {mutation.isPending ? 'Adding...' : 'Add Account'}
-          </button>
+          {(accountType === 'apikey' || legacyImport) && (
+            <button
+              onClick={() => mutation.mutate()}
+              disabled={!canSubmit || mutation.isPending}
+              className="flex-1 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600 disabled:opacity-50"
+            >
+              {mutation.isPending ? 'Adding...' : 'Add Account'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -528,7 +612,7 @@ export default function Accounts() {
                     <div className="flex items-center gap-2">
                       <Link to={'/accounts/' + account.id} className="text-sm font-medium text-gray-900 dark:text-white hover:text-brand-500 hover:underline">{account.name}</Link>
                       <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${isApiKey(account) ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'}`}>
-                        {isApiKey(account) ? 'API Key' : 'OAuth'}
+                        {isApiKey(account) ? 'API Key' : account.oauth_provider === 'siwc' ? 'ChatGPT sign-in' : 'OAuth (legacy)'}
                       </span>
                       {account.owner_user_id && (() => {
                         const owner = users.find(u => u.id === account.owner_user_id)
@@ -596,7 +680,7 @@ export default function Accounts() {
                       >
                         <Pencil className="w-4 h-4" />
                       </button>
-                      {!isApiKey(account) && (
+                      {!isApiKey(account) && account.oauth_provider !== 'siwc' && (
                         <button
                           title="View credentials JSON"
                           onClick={() => setCredAccount(account)}

@@ -194,6 +194,8 @@ func main() {
 	switch args[0] {
 	case "login":
 		cmdLogin(args[1:])
+	case "account-login":
+		cmdAccountLogin(args[1:])
 	case "init":
 		cmdInit(args[1:])
 	case "logout":
@@ -1309,6 +1311,7 @@ func printHelp() {
 	fmt.Print(`ourcodex - Codex CLI wrapper using OurCodex proxy
 
 Usage:
+  ourcodex account-login <server> [pairing_token]  Connect ChatGPT through browser OAuth
   ourcodex init <server_url> [token]    Setup proxy + optionally share your Codex account
   ourcodex login <server_url> [token]   Configure proxy connection (no account sharing)
   ourcodex logout                       Remove proxy configuration
@@ -1320,6 +1323,7 @@ Usage:
   ourcodex [codex-args...]             Run codex through the proxy
 
 Examples:
+  ourcodex account-login https://proxy.example.com oc-connect-...
   ourcodex init http://proxy.example.com:8080
   ourcodex init http://proxy.example.com:8080 sk-proxy-abc123
   ourcodex login http://proxy.example.com:8080

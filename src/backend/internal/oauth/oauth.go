@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,10 @@ type refreshResponse struct {
 // RefreshToken rotates one ChatGPT OAuth credential set. account must contain
 // plaintext tokens; the persisted values remain encrypted at rest.
 func (r *Refresher) RefreshToken(db *gorm.DB, account *database.CodexAccount) error {
+	if account.OAuthProvider == "siwc" {
+		return r.refreshSIWC(db, account)
+	}
+
 	body, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": account.RefreshToken,
@@ -133,6 +138,90 @@ func (r *Refresher) RefreshToken(db *gorm.DB, account *database.CodexAccount) er
 	account.RefreshTokenHash = RefreshTokenHash(refreshToken)
 	account.IDToken = idToken
 	account.ChatGPTAccountID = accountID
+	account.ExpiresAt = expiresAt
+	account.Status = "active"
+	account.LastUsedAt = &now
+	return nil
+}
+
+func (r *Refresher) refreshSIWC(db *gorm.DB, account *database.CodexAccount) error {
+	clientID := strings.TrimSpace(account.OAuthClientID)
+	if !strings.HasPrefix(clientID, "oaiapp_") {
+		return fmt.Errorf("SIWC account has no issued OAuth client ID")
+	}
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {account.RefreshToken},
+		"client_id":     {clientID},
+		"resource":      {SIWCResource},
+	}
+	req, err := http.NewRequest(http.MethodPost, SIWCTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("refresh failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+
+	var result SIWCTokenResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return err
+	}
+	if result.AccessToken == "" || result.RefreshToken == "" {
+		return fmt.Errorf("SIWC refresh response did not contain replacement credentials")
+	}
+	expiresAt := TokenExpiresAt(result.AccessToken)
+	if expiresAt.IsZero() && result.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	}
+	if expiresAt.IsZero() {
+		return fmt.Errorf("SIWC refresh response did not contain an expiry")
+	}
+	idToken := firstNonEmpty(result.IDToken, account.IDToken)
+
+	encAccess, err := r.enc.Encrypt(result.AccessToken)
+	if err != nil {
+		return err
+	}
+	encRefresh, err := r.enc.Encrypt(result.RefreshToken)
+	if err != nil {
+		return err
+	}
+	encID, err := r.enc.Encrypt(idToken)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	updates := map[string]interface{}{
+		"access_token":       encAccess,
+		"refresh_token":      encRefresh,
+		"refresh_token_hash": RefreshTokenHash(result.RefreshToken),
+		"id_token":           encID,
+		"expires_at":         expiresAt,
+		"status":             "active",
+		"last_error":         "",
+		"last_used_at":       now,
+	}
+	if err := db.Model(account).Updates(updates).Error; err != nil {
+		return err
+	}
+
+	account.AccessToken = result.AccessToken
+	account.RefreshToken = result.RefreshToken
+	account.RefreshTokenHash = RefreshTokenHash(result.RefreshToken)
+	account.IDToken = idToken
 	account.ExpiresAt = expiresAt
 	account.Status = "active"
 	account.LastUsedAt = &now

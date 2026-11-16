@@ -12,14 +12,16 @@ The `ourcodex` command launches the installed `codex` CLI with a temporary custo
 ```text
 Codex CLI → OurCodex /proxy/v1/responses → selected upstream account
                                       ├─ OpenAI /v1/responses (API key)
-                                      └─ ChatGPT Codex /responses (OAuth)
+                                      ├─ OpenAI /v1/responses (Sign in with ChatGPT)
+                                      └─ ChatGPT Codex /responses (legacy auth.json)
 ```
 
 The wrapper does not replace Codex or rewrite the user's permanent model-provider configuration. If the proxy is unreachable, it launches Codex with the user's normal local credentials.
 
 OurCodex supports:
 
-- ChatGPT OAuth credentials from `~/.codex/auth.json`, including refresh-token rotation and `ChatGPT-Account-ID`
+- browser-based Sign in with ChatGPT using OAuth Authorization Code + PKCE and a local loopback callback
+- legacy ChatGPT OAuth credentials from `~/.codex/auth.json`, including refresh-token rotation and `ChatGPT-Account-ID`
 - OpenAI API keys through the public Responses API
 - account pools, model allowlists, per-user token quotas, budgets, and RPM limits
 - Responses API streaming and usage accounting
@@ -55,6 +57,18 @@ ourcodex login https://your-ourcodex.example sk-proxy-...
 ourcodex
 ```
 
+Install the official Codex CLI first, then download the matching `ourcodex`
+binary from the dashboard's **Downloads** page:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+chmod +x ./ourcodex
+sudo mv ./ourcodex /usr/local/bin/ourcodex
+```
+
+An administrator can instead generate a user setup link, which provides a
+one-command OurCodex installer with the proxy token already configured.
+
 Any normal Codex arguments can follow the wrapper name:
 
 ```bash
@@ -66,23 +80,43 @@ ourcodex exec "run the tests and fix failures"
 
 ### ChatGPT OAuth
 
-Log into Codex on the account owner's machine:
+In **Accounts**, choose **Add OAuth Account**, enter the account name and pool,
+then generate the secure sign-in command. Run it on the computer where the
+ChatGPT browser should open:
 
 ```bash
-codex login
+ourcodex account-login https://your-ourcodex.example oc-connect-...
 ```
 
-In the dashboard, add an OAuth account and paste the complete contents of `~/.codex/auth.json`. Alternatively, an end user can opt into sharing their local credential set during setup:
+The CLI uses a local `127.0.0.1` callback, PKCE, state and nonce validation, and
+OpenAI's published signing keys. It transfers the verified tokens to OurCodex
+over HTTPS using a one-time 15-minute pairing token. Access, refresh, and ID
+tokens are encrypted at rest and are never stored in browser JavaScript.
+
+Existing Codex `auth.json` credentials remain available as a legacy fallback.
+An end user can also opt into sharing an existing local credential set during
+setup:
 
 ```bash
 ourcodex init https://your-ourcodex.example sk-proxy-...
 ```
 
-OAuth credentials are encrypted at rest. The proxy refreshes expiring access tokens and exports refreshed credentials to the owning user so their local Codex session can stay in sync.
+Legacy OAuth credentials use the ChatGPT Codex backend and can be synchronized
+back to their owning user. New Sign in with ChatGPT credentials use the public
+Responses API and remain managed by OurCodex.
 
 ### OpenAI API key
 
-Choose “API Key” when adding an account and paste an OpenAI API key. API-key accounts are sent to `OPENAI_API_URL`; OAuth accounts are sent to `CHATGPT_CODEX_URL`.
+Choose “API Key” when adding an account and paste an OpenAI API key. API-key and
+Sign in with ChatGPT accounts are sent to `OPENAI_API_URL`; legacy OAuth
+accounts are sent to `CHATGPT_CODEX_URL`.
+
+### Account statuses
+
+- `active`: eligible for pool selection.
+- `disabled`: explicitly disabled by an administrator; upstream failures do not create this status.
+- `exhausted`: temporarily rate-limited or out of the observed allowance.
+- `error`: token refresh or a configured health check confirmed a credential problem.
 
 ## Build the client locally
 

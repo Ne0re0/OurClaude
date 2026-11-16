@@ -134,7 +134,7 @@ export default function Dashboard() {
           <ol className="space-y-3">
             {[
               { step: 1, label: 'Create a pool', desc: 'Group your Codex accounts into a pool.', to: '/pools' },
-              { step: 2, label: 'Add a Codex account', desc: 'Paste ~/.codex/auth.json to add a ChatGPT OAuth account.', to: '/accounts' },
+              { step: 2, label: 'Add a Codex account', desc: 'Connect a ChatGPT account securely or add an OpenAI API key.', to: '/accounts' },
               { step: 3, label: 'Create a user', desc: 'Generate an sk-proxy-* token for a user.', to: '/users' },
               { step: 4, label: 'Download ourcodex', desc: 'Get the CLI wrapper binary.', to: '/downloads' },
             ].map(({ step, label, desc, to }) => (

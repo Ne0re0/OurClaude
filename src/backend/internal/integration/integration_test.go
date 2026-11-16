@@ -122,6 +122,70 @@ func TestHealthCheck(t *testing.T) {
 	}
 }
 
+func TestOAuthConnectPairingSession(t *testing.T) {
+	ts, _ := setupServer(t)
+	cookies := login(t, ts)
+
+	poolResp := postJSON(t, ts, "/api/admin/pools", map[string]string{"name": "OAuth Pool"}, cookies)
+	if poolResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create pool: expected 201, got %d", poolResp.StatusCode)
+	}
+	var pool database.Pool
+	json.NewDecoder(poolResp.Body).Decode(&pool)
+	poolResp.Body.Close()
+
+	startResp := postJSON(t, ts, "/api/admin/accounts/oauth-connect", map[string]interface{}{
+		"name":     "Browser login",
+		"pool_ids": []uint{pool.ID},
+	}, cookies)
+	if startResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(startResp.Body)
+		t.Fatalf("start OAuth connect: expected 201, got %d: %s", startResp.StatusCode, body)
+	}
+	var start struct {
+		ID        uint      `json:"id"`
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	json.NewDecoder(startResp.Body).Decode(&start)
+	startResp.Body.Close()
+	if start.ID == 0 || !strings.HasPrefix(start.Token, "oc-connect-") || !start.ExpiresAt.After(time.Now()) {
+		t.Fatalf("unexpected pairing response: %#v", start)
+	}
+
+	infoReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/oauth/connect", nil)
+	infoReq.Header.Set("Authorization", "Bearer "+start.Token)
+	infoResp, err := http.DefaultClient.Do(infoReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer infoResp.Body.Close()
+	if infoResp.StatusCode != http.StatusOK {
+		t.Fatalf("pairing info: expected 200, got %d", infoResp.StatusCode)
+	}
+	var info struct {
+		HostID    string `json:"host_id"`
+		AgentName string `json:"agent_name"`
+	}
+	json.NewDecoder(infoResp.Body).Decode(&info)
+	if !strings.HasPrefix(info.HostID, "urn:uuid:") || info.AgentName != "OurCodex" {
+		t.Fatalf("unexpected pairing info: %#v", info)
+	}
+
+	statusResp := getJSON(t, ts, fmt.Sprintf("/api/admin/accounts/oauth-connect/%d", start.ID), cookies)
+	defer statusResp.Body.Close()
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("pairing status: expected 200, got %d", statusResp.StatusCode)
+	}
+	var status struct {
+		Status string `json:"status"`
+	}
+	json.NewDecoder(statusResp.Body).Decode(&status)
+	if status.Status != "pending" {
+		t.Fatalf("expected pending status, got %q", status.Status)
+	}
+}
+
 func TestLogin_Success(t *testing.T) {
 	ts, _ := setupServer(t)
 	resp := postJSON(t, ts, "/api/auth/login", map[string]string{
