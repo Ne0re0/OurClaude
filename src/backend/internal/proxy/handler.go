@@ -400,6 +400,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	const maxRetries = 3
 	var lastErr error
+	// limitedOnly stays true while every failed attempt was a usage limit, so
+	// the client can be told to back off rather than seeing a gateway error.
+	limitedOnly := true
 	attemptedAccountIDs := make(map[uint]struct{}, maxRetries)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -419,6 +422,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return // Client disconnected — not the account's fault
 			}
 			lastErr = err
+			limitedOnly = false
 			log.Printf("proxy: account %d network error: %v", account.ID, err)
 			continue
 		}
@@ -439,7 +443,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Body.Close()
 			log.Printf("proxy: account %d got 401 (token expired/invalid), trying next account", account.ID)
 			lastErr = fmt.Errorf("account %d: unauthorized", account.ID)
+			limitedOnly = false
 			continue
+		}
+
+		// A ChatGPT plan account that is out of usage still answers 200 and
+		// then fails the stream. When that happens before any output, nothing
+		// has reached the client yet, so move on to another account.
+		if resp.StatusCode == http.StatusOK {
+			prefix, failure := peekLeadingFailure(resp.Body)
+			if failure != "" {
+				resp.Body.Close()
+				if failure == codeUsageLimitExceeded {
+					h.pool.MarkExhausted(account.ID)
+				}
+				log.Printf("proxy: account %d stream failed with %s, trying next account", account.ID, failure)
+				lastErr = fmt.Errorf("account %d: %s", account.ID, failure)
+				continue
+			}
+			resp.Body = newReplayBody(prefix, resp.Body)
 		}
 
 		h.streamResponse(w, resp, user.ID, account.ID, r.URL.Path, start, messagesJSON, cacheKey, h.logStream, h.statsStream)
@@ -447,7 +469,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if lastErr != nil {
+	if lastErr != nil && limitedOnly {
+		writeError(w, http.StatusTooManyRequests, "usage limit reached on every available account, try again later ("+lastErr.Error()+")")
+	} else if lastErr != nil {
 		writeError(w, http.StatusBadGateway, "upstream error: "+lastErr.Error())
 	} else {
 		writeError(w, http.StatusServiceUnavailable, "all accounts exhausted, try again later")
@@ -519,7 +543,7 @@ func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexA
 
 	for key, values := range r.Header {
 		k := strings.ToLower(key)
-		if k == "authorization" || k == "host" || k == "x-api-key" || k == "chatgpt-account-id" || k == "content-length" {
+		if k == "authorization" || k == "host" || k == "x-api-key" || k == "chatgpt-account-id" || k == "content-length" || k == "accept-encoding" {
 			continue
 		}
 		for _, v := range values {
@@ -527,6 +551,11 @@ func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexA
 		}
 	}
 
+	// The proxy reads every response to account for usage and detect limits,
+	// so it must not relay an encoding the client negotiated (for example,
+	// zstd from the Codex CLI). identity keeps streams flowing without
+	// decompression buffering.
+	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
 	if account.AccountType != "apikey" && account.OAuthProvider != "siwc" && account.ChatGPTAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
@@ -570,8 +599,12 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 	for {
 		n, err := tee.Read(chunk)
 		if n > 0 {
-			if firstByte && isStreaming {
-				ttftMs = int(time.Since(start).Milliseconds())
+			if firstByte {
+				// The ChatGPT plan route streams events as text/plain.
+				isStreaming = isStreaming || looksLikeSSE(chunk[:n])
+				if isStreaming {
+					ttftMs = int(time.Since(start).Milliseconds())
+				}
 				firstByte = false
 			}
 			w.Write(chunk[:n])
@@ -586,6 +619,8 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 
 	latencyMs := int(time.Since(start).Milliseconds())
 	captured := buf.Bytes()
+	// The first read can end mid-marker; decide from the whole capture.
+	isStreaming = isStreaming || looksLikeSSE(captured)
 
 	// Debug: log captured body size and streaming status
 	log.Printf("proxy: response captured %d bytes, streaming=%v, status=%d, user=%d, account=%d",
@@ -607,7 +642,23 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 		}, cacheTTL)
 	}
 
-	go parseAndLogUsage(captured, isStreaming, userID, accountID, endpoint, resp.StatusCode, latencyMs, ttftMs, messagesJSON, h.db, logStream, statsStream)
+	go func() {
+		outcome := parseAndLogUsage(captured, isStreaming, userID, accountID, endpoint, resp.StatusCode, latencyMs, ttftMs, messagesJSON, h.db, logStream, statsStream)
+		if h.pool == nil {
+			return
+		}
+		switch {
+		case outcome.failure == codeUsageLimitExceeded:
+			// The limit was hit after output had started streaming, too late
+			// to switch accounts for this request; route the next ones away.
+			log.Printf("proxy: account %d reached its usage limit mid-stream", accountID)
+			h.pool.MarkExhausted(accountID)
+		case outcome.completed:
+			// ChatGPT plan accounts send no reset headers, so a completed
+			// response is the signal that an exhausted account has capacity.
+			h.pool.MarkRecovered(accountID)
+		}
+	}()
 }
 
 func (h *Handler) maybeAlertQuota(user *database.User, period string, used, quota int) {
@@ -630,46 +681,28 @@ func (h *Handler) maybeAlertQuota(user *database.User, period string, used, quot
 	})
 }
 
-func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, endpoint string, statusCode, latencyMs, ttftMs int, messagesJSON string, db *gorm.DB, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) {
+// usageOutcome reports how an upstream response ended, so the caller can
+// update the serving account's availability.
+type usageOutcome struct {
+	completed bool   // a response.completed event (or a completed JSON response) was seen
+	failure   string // error code of a terminal response.failed / error event
+}
+
+func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, endpoint string, statusCode, latencyMs, ttftMs int, messagesJSON string, db *gorm.DB, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) usageOutcome {
 	var inputTokens, outputTokens, cacheRead, cacheWrite int
 	var model string
 	var responseText strings.Builder
+	var outcome usageOutcome
 
 	if len(body) == 0 {
 		log.Printf("proxy: empty response body for user=%d account=%d status=%d", userID, accountID, statusCode)
 	}
 
 	if isStreaming {
-		// Responses API SSE uses one JSON object per data line.
-		body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
-		body = bytes.ReplaceAll(body, []byte("\r"), []byte("\n"))
-		lines := bytes.Split(body, []byte("\n"))
-		for _, line := range lines {
-			if !bytes.HasPrefix(line, []byte("data: ")) {
-				continue
-			}
-			data := line[6:]
-			if string(data) == "[DONE]" {
-				continue
-			}
-
-			var event struct {
-				Type     string `json:"type"`
-				Delta    string `json:"delta"`
-				Response struct {
-					Model string `json:"model"`
-					Usage struct {
-						InputTokens  int `json:"input_tokens"`
-						OutputTokens int `json:"output_tokens"`
-						InputDetails struct {
-							CachedTokens     int `json:"cached_tokens"`
-							CacheWriteTokens int `json:"cache_write_tokens"`
-						} `json:"input_tokens_details"`
-					} `json:"usage"`
-				} `json:"response"`
-			}
-			if err := json.Unmarshal(data, &event); err != nil {
-				continue
+		for _, data := range sseData(body, true) {
+			var event streamEvent
+			if json.Unmarshal(data, &event) != nil {
+				continue // includes the [DONE] sentinel
 			}
 			switch event.Type {
 			case "response.completed", "response.incomplete", "response.failed":
@@ -678,14 +711,19 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 				outputTokens = event.Response.Usage.OutputTokens
 				cacheRead = event.Response.Usage.InputDetails.CachedTokens
 				cacheWrite = event.Response.Usage.InputDetails.CacheWriteTokens
+				outcome.completed = event.Type == "response.completed"
+				outcome.failure = event.failureCode()
+			case "error":
+				outcome.failure = event.failureCode()
 			case "response.output_text.delta":
 				responseText.WriteString(event.Delta)
 			}
 		}
 	} else {
 		var resp struct {
-			Model string `json:"model"`
-			Usage struct {
+			Model  string `json:"model"`
+			Status string `json:"status"`
+			Usage  struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 				InputDetails struct {
@@ -702,6 +740,7 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 			} `json:"output"`
 		}
 		if err := json.Unmarshal(body, &resp); err == nil {
+			outcome.completed = statusCode == http.StatusOK && resp.Status == "completed"
 			model = resp.Model
 			inputTokens = resp.Usage.InputTokens
 			outputTokens = resp.Usage.OutputTokens
@@ -758,7 +797,7 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 
 	if err := db.Create(&entry).Error; err != nil {
 		log.Printf("failed to log usage (user=%d, account=%d): %v", userID, accountID, err)
-		return
+		return outcome
 	}
 
 	if logStream != nil {
@@ -790,6 +829,7 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 			OutputTokens: outputTokens,
 		})
 	}
+	return outcome
 }
 
 type limitedWriter struct {
@@ -920,7 +960,15 @@ var modelPricingProxy = []struct {
 	name          string
 	input, output float64
 }{
+	// Standard short-context rates, developers.openai.com/api/docs/pricing (November 2026).
+	{"gpt-6-astra", 10.0, 50.0},
+	{"gpt-6.1-sol", 2.0, 10.0},
+	{"gpt-6.1-terra", 1.0, 5.0},
+	{"gpt-6-sol", 2.0, 10.0},
+	{"gpt-6-luna", 0.10, 0.50},
 	{"gpt-5.6-sol", 4.0, 20.0},
+	{"gpt-5.6-terra", 2.0, 12.0},
+	{"gpt-5.6-luna", 0.20, 1.20},
 	{"gpt-5.3-codex", 1.75, 14.0},
 	{"gpt-5.4-pro", 30.0, 180.0},
 	{"gpt-5.2-pro", 21.0, 168.0},

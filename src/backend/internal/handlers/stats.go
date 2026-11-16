@@ -19,7 +19,16 @@ var modelPricing = []struct {
 	name          string
 	input, output float64
 }{
+	// Standard short-context rates, developers.openai.com/api/docs/pricing (November 2026).
+	// Keep in sync with modelPricingProxy in internal/proxy/handler.go.
+	{"gpt-6-astra", 10.0, 50.0},
+	{"gpt-6.1-sol", 2.0, 10.0},
+	{"gpt-6.1-terra", 1.0, 5.0},
+	{"gpt-6-sol", 2.0, 10.0},
+	{"gpt-6-luna", 0.10, 0.50},
 	{"gpt-5.6-sol", 4.0, 20.0},
+	{"gpt-5.6-terra", 2.0, 12.0},
+	{"gpt-5.6-luna", 0.20, 1.20},
 	{"gpt-5.3-codex", 1.75, 14.0},
 	{"gpt-5.4-pro", 30.0, 180.0},
 	{"gpt-5.2-pro", 21.0, 168.0},

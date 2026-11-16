@@ -342,6 +342,17 @@ func (m *Manager) MarkExhausted(accountID uint) {
 	}
 }
 
+// MarkRecovered returns an exhausted account to rotation after it completed a
+// response. Accounts in any other status are left unchanged.
+func (m *Manager) MarkRecovered(accountID uint) {
+	result := m.db.Model(&database.CodexAccount{}).
+		Where("id = ? AND status = ?", accountID, "exhausted").
+		Updates(map[string]interface{}{"status": "active", "last_error": ""})
+	if result.Error == nil && result.RowsAffected > 0 {
+		log.Printf("pool: account %d completed a response and is active again", accountID)
+	}
+}
+
 func (m *Manager) MarkError(accountID uint, errMsg string) {
 	m.db.Model(&database.CodexAccount{}).
 		Where("id = ?", accountID).
