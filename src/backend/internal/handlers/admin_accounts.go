@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,8 @@ import (
 
 	"gorm.io/gorm"
 )
+
+var errUnknownPool = errors.New("unknown pool")
 
 type AccountsHandler struct {
 	db      *gorm.DB
@@ -57,17 +61,17 @@ func (h *AccountsHandler) upsertOAuthAccount(name string, creds oauth.Credential
 	if err := query.First(&existing).Error; err == nil {
 		// Update existing
 		updates := map[string]interface{}{
-			"access_token":         encAccess,
-			"refresh_token":        encRefresh,
-			"refresh_token_hash":   hash,
-			"id_token":             encID,
-			"chat_gpt_account_id":  creds.AccountID,
-			"oauth_issuer":         creds.Issuer,
-			"oauth_client_id":      creds.ClientID,
-			"oauth_login_owner_id": creds.LoginOwnerID,
-			"expires_at":           creds.ExpiresAt,
-			"status":               "active",
-			"last_error":           "",
+			"access_token":          encAccess,
+			"refresh_token":         encRefresh,
+			"refresh_token_hash":    hash,
+			"id_token":              encID,
+			"chat_gpt_account_id":   creds.AccountID,
+			"o_auth_issuer":         creds.Issuer,
+			"o_auth_client_id":      creds.ClientID,
+			"o_auth_login_owner_id": creds.LoginOwnerID,
+			"expires_at":            creds.ExpiresAt,
+			"status":                "active",
+			"last_error":            "",
 		}
 		if ownerUserID != nil {
 			updates["owner_user_id"] = ownerUserID
@@ -111,11 +115,11 @@ func (h *AccountsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name            string `json:"name"`
-		PoolIDs         []uint `json:"pool_ids"`
-		AccountType     string `json:"account_type"`     // "oauth" (default) or "apikey"
-		CredentialsJSON string `json:"credentials_json"` // for oauth
-		APIKey          string `json:"api_key"`          // for apikey
+		Name            string  `json:"name"`
+		PoolIDs         *[]uint `json:"pool_ids"`
+		AccountType     string  `json:"account_type"`     // "oauth" (default) or "apikey"
+		CredentialsJSON string  `json:"credentials_json"` // for oauth
+		APIKey          string  `json:"api_key"`          // for apikey
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -126,8 +130,22 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp("name is required"))
 		return
 	}
+	var poolIDs []uint
+	if req.PoolIDs != nil {
+		validated, err := validatePoolIDs(h.db, *req.PoolIDs)
+		if err != nil {
+			if errors.Is(err, errUnknownPool) {
+				writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
+			} else {
+				writeJSON(w, http.StatusInternalServerError, errResp("failed to validate pools"))
+			}
+			return
+		}
+		poolIDs = validated
+	}
 
 	var account database.CodexAccount
+	updatedExisting := false
 
 	if req.AccountType == "apikey" {
 		// API key account
@@ -171,12 +189,7 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		account = *acc
-		if updated {
-			h.db.Preload("Pools").First(&account, account.ID)
-			logAudit(h.db, r, "create_account", "account:"+req.Name, "deduplicated — updated existing")
-			writeJSON(w, http.StatusOK, account)
-			return
-		}
+		updatedExisting = updated
 	}
 
 	if account.ID == 0 {
@@ -186,12 +199,25 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create join table entries
-	for _, pid := range req.PoolIDs {
-		h.db.Create(&database.AccountPool{AccountID: account.ID, PoolID: pid})
+	// A missing pool_ids field on a deduplicated import preserves the existing
+	// assignments; an explicit empty list intentionally unassigns all pools.
+	if !updatedExisting || req.PoolIDs != nil {
+		if err := syncAccountPools(h.db, account.ID, poolIDs); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to assign account pools"))
+			return
+		}
 	}
 
 	h.db.Preload("Pools").First(&account, account.ID)
+	if updatedExisting {
+		details := "deduplicated — updated existing"
+		if req.PoolIDs != nil {
+			details += " and synchronized pools"
+		}
+		logAudit(h.db, r, "create_account", "account:"+req.Name, details)
+		writeJSON(w, http.StatusOK, account)
+		return
+	}
 	logAudit(h.db, r, "create_account", "account:"+req.Name, "")
 	writeJSON(w, http.StatusCreated, account)
 }
@@ -227,6 +253,18 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
 		return
 	}
+	var validatedPoolIDs []uint
+	if req.PoolIDs != nil {
+		validatedPoolIDs, err = validatePoolIDs(h.db, *req.PoolIDs)
+		if err != nil {
+			if errors.Is(err, errUnknownPool) {
+				writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
+			} else {
+				writeJSON(w, http.StatusInternalServerError, errResp("failed to validate pools"))
+			}
+			return
+		}
+	}
 
 	updates := map[string]interface{}{}
 	if req.Name != "" {
@@ -249,12 +287,9 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Sync pool assignments if provided
 	if req.PoolIDs != nil {
-		// Delete existing links and re-create
-		h.db.Where("account_id = ?", id).Delete(&database.AccountPool{})
-		for _, pid := range *req.PoolIDs {
-			if pid != 0 {
-				h.db.Create(&database.AccountPool{AccountID: uint(id), PoolID: pid})
-			}
+		if err := syncAccountPools(h.db, id, validatedPoolIDs); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to assign account pools"))
+			return
 		}
 	}
 
@@ -262,6 +297,50 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	h.db.Preload("Pools").First(&account, id)
 	logAudit(h.db, r, "update_account", fmt.Sprintf("account:%s", account.Name), "")
 	writeJSON(w, http.StatusOK, account)
+}
+
+// validatePoolIDs removes zero and duplicate values and rejects references to
+// pools that do not exist. This prevents silently creating an unassigned
+// account when the dashboard sends a stale pool selection.
+func validatePoolIDs(db *gorm.DB, poolIDs []uint) ([]uint, error) {
+	seen := make(map[uint]struct{}, len(poolIDs))
+	normalized := make([]uint, 0, len(poolIDs))
+	for _, poolID := range poolIDs {
+		if poolID == 0 {
+			continue
+		}
+		if _, exists := seen[poolID]; exists {
+			continue
+		}
+		seen[poolID] = struct{}{}
+		normalized = append(normalized, poolID)
+	}
+	if len(normalized) == 0 {
+		return normalized, nil
+	}
+
+	var count int64
+	if err := db.Model(&database.Pool{}).Where("id IN ?", normalized).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count != int64(len(normalized)) {
+		return nil, fmt.Errorf("%w: one or more selected pools no longer exist", errUnknownPool)
+	}
+	return normalized, nil
+}
+
+func syncAccountPools(db *gorm.DB, accountID uint, poolIDs []uint) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("account_id = ?", accountID).Delete(&database.AccountPool{}).Error; err != nil {
+			return err
+		}
+		for _, poolID := range poolIDs {
+			if err := tx.Create(&database.AccountPool{AccountID: accountID, PoolID: poolID}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (h *AccountsHandler) Delete(w http.ResponseWriter, r *http.Request) {
@@ -423,13 +502,18 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upstream := h.cfg.OpenAIAPIURL
+	testURL := strings.TrimRight(upstream, "/") + "/models"
 	if account.AccountType == "oauth" {
 		upstream = h.cfg.ChatGPTURL
+		testURL = strings.TrimRight(upstream, "/") + "/models?client_version=0.0.0"
 	}
-	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(upstream, "/")+"/models", nil)
+	req, _ := http.NewRequest(http.MethodGet, testURL, nil)
 	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Accept", "application/json")
 	if account.AccountType == "oauth" && account.ChatGPTAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
+		req.Header.Set("Originator", "codex_cli_rs")
+		req.Header.Set("User-Agent", "ourcodex-account-test")
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -440,10 +524,29 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	result := map[string]interface{}{
 		"status_code": resp.StatusCode,
 		"ok":          resp.StatusCode == http.StatusOK,
-	})
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		var upstreamError struct {
+			Error struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &upstreamError) == nil {
+			if upstreamError.Error.Message != "" {
+				result["upstream_error"] = upstreamError.Error.Message
+			}
+			if upstreamError.Error.Code != "" {
+				result["upstream_code"] = upstreamError.Error.Code
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 // GET /api/admin/accounts/{id}/credentials — returns decrypted tokens in credentials.json format

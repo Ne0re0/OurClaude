@@ -151,6 +151,9 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Run <code className="font-mono">codex login</code> on the account owner's machine, then paste the complete <code className="font-mono">~/.codex/auth.json</code> below.
               </p>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                OAuth refresh tokens rotate. For a pooled account, re-sync the local auth file after a proxy refresh or keep this login dedicated to OurCodex; continuing to refresh an older copy can revoke the token family.
+              </p>
               <textarea
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 font-mono text-xs h-44 resize-none dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
                 value={credJson} onChange={e => setCredJson(e.target.value)}
@@ -442,7 +445,7 @@ export default function Accounts() {
 
   const testMutation = useMutation({
     mutationFn: accountsApi.test,
-    onSuccess: (data) => toast(data.ok ? '✓ Account is working' : `✗ Status code: ${data.status_code}`, data.ok),
+    onSuccess: (data) => toast(data.ok ? '✓ Account is working' : `✗ ${data.upstream_error ?? `Status code: ${data.status_code}`}`, data.ok),
     onError: (e: Error) => toast('Test failed: ' + e.message, false),
   })
 

@@ -2,7 +2,10 @@ package integration_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,6 +78,21 @@ func getJSON(t *testing.T, ts *httptest.Server, path string, cookies []*http.Coo
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s failed: %v", path, err)
+	}
+	return resp
+}
+
+func putJSON(t *testing.T, ts *httptest.Server, path string, body interface{}, cookies []*http.Cookie) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s failed: %v", path, err)
 	}
 	return resp
 }
@@ -205,6 +223,96 @@ func TestPoolCRUD(t *testing.T) {
 	listResp := getJSON(t, ts, "/api/admin/pools", cookies)
 	if listResp.StatusCode != http.StatusOK {
 		t.Errorf("list pools: expected 200, got %d", listResp.StatusCode)
+	}
+}
+
+func TestOAuthAccountPoolAssignmentOnDedupAndUpdate(t *testing.T) {
+	ts, _ := setupServer(t)
+	cookies := login(t, ts)
+
+	claims, _ := json.Marshal(map[string]interface{}{
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]interface{}{
+			"chatgpt_account_id": "acct-pool-test",
+		},
+	})
+	accessToken := "header." + base64.RawURLEncoding.EncodeToString(claims) + ".signature"
+	authJSON, _ := json.Marshal(map[string]interface{}{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]interface{}{
+			"access_token":  accessToken,
+			"refresh_token": "refresh-pool-test",
+			"account_id":    "acct-pool-test",
+		},
+	})
+
+	createAccount := postJSON(t, ts, "/api/admin/accounts", map[string]interface{}{
+		"name":             "Pool account",
+		"account_type":     "oauth",
+		"credentials_json": string(authJSON),
+	}, cookies)
+	if createAccount.StatusCode != http.StatusCreated {
+		t.Fatalf("initial account create: got %d", createAccount.StatusCode)
+	}
+	var account struct {
+		ID    uint            `json:"id"`
+		Pools []database.Pool `json:"pools"`
+	}
+	if err := json.NewDecoder(createAccount.Body).Decode(&account); err != nil {
+		t.Fatal(err)
+	}
+
+	createPool := func(name string) uint {
+		t.Helper()
+		resp := postJSON(t, ts, "/api/admin/pools", map[string]string{"name": name}, cookies)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create pool %q: got %d", name, resp.StatusCode)
+		}
+		var pool database.Pool
+		if err := json.NewDecoder(resp.Body).Decode(&pool); err != nil {
+			t.Fatal(err)
+		}
+		return pool.ID
+	}
+	firstPoolID := createPool("First Pool")
+
+	// Re-importing the same ChatGPT account must still apply the selected pool.
+	dedup := postJSON(t, ts, "/api/admin/accounts", map[string]interface{}{
+		"name":             "Pool account",
+		"account_type":     "oauth",
+		"credentials_json": string(authJSON),
+		"pool_ids":         []uint{firstPoolID},
+	}, cookies)
+	if dedup.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(dedup.Body)
+		t.Fatalf("deduplicated account create: got %d: %s", dedup.StatusCode, body)
+	}
+	if err := json.NewDecoder(dedup.Body).Decode(&account); err != nil {
+		t.Fatal(err)
+	}
+	if len(account.Pools) != 1 || account.Pools[0].ID != firstPoolID {
+		t.Fatalf("deduplicated account pools = %#v, want pool %d", account.Pools, firstPoolID)
+	}
+
+	secondPoolID := createPool("Second Pool")
+	updated := putJSON(t, ts, fmt.Sprintf("/api/admin/accounts/%d", account.ID), map[string]interface{}{
+		"pool_ids": []uint{secondPoolID},
+	}, cookies)
+	if updated.StatusCode != http.StatusOK {
+		t.Fatalf("account pool update: got %d", updated.StatusCode)
+	}
+	if err := json.NewDecoder(updated.Body).Decode(&account); err != nil {
+		t.Fatal(err)
+	}
+	if len(account.Pools) != 1 || account.Pools[0].ID != secondPoolID {
+		t.Fatalf("updated account pools = %#v, want pool %d", account.Pools, secondPoolID)
+	}
+
+	rejected := putJSON(t, ts, fmt.Sprintf("/api/admin/accounts/%d", account.ID), map[string]interface{}{
+		"pool_ids": []uint{99999},
+	}, cookies)
+	if rejected.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown pool update: got %d, want 400", rejected.StatusCode)
 	}
 }
 

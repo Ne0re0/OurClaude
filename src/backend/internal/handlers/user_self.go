@@ -270,18 +270,18 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 
 	if found {
 		h.db.Model(&existing).Updates(map[string]interface{}{
-			"access_token":         encAccess,
-			"refresh_token":        encRefresh,
-			"refresh_token_hash":   rtHash,
-			"id_token":             encID,
-			"chat_gpt_account_id":  creds.AccountID,
-			"oauth_issuer":         creds.Issuer,
-			"oauth_client_id":      creds.ClientID,
-			"oauth_login_owner_id": creds.LoginOwnerID,
-			"expires_at":           creds.ExpiresAt,
-			"status":               "active",
-			"last_error":           "",
-			"owner_user_id":        user.ID,
+			"access_token":          encAccess,
+			"refresh_token":         encRefresh,
+			"refresh_token_hash":    rtHash,
+			"id_token":              encID,
+			"chat_gpt_account_id":   creds.AccountID,
+			"o_auth_issuer":         creds.Issuer,
+			"o_auth_client_id":      creds.ClientID,
+			"o_auth_login_owner_id": creds.LoginOwnerID,
+			"expires_at":            creds.ExpiresAt,
+			"status":                "active",
+			"last_error":            "",
+			"owner_user_id":         user.ID,
 		})
 		h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.AccountPool{AccountID: existing.ID, PoolID: poolID})
 		writeJSON(w, http.StatusOK, map[string]interface{}{

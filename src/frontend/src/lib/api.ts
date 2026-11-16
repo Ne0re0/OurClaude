@@ -109,7 +109,7 @@ export const accountsApi = {
   delete:      (id: number) => del(`/admin/accounts/${id}`),
   refresh:     (id: number) => post<{ expires_at: string }>(`/admin/accounts/${id}/refresh`),
   reset:       (id: number) => post(`/admin/accounts/${id}/reset`),
-  test:        (id: number) => post<{ status_code: number; ok: boolean }>(`/admin/accounts/${id}/test`),
+  test:        (id: number) => post<{ status_code: number; ok: boolean; upstream_error?: string; upstream_code?: string }>(`/admin/accounts/${id}/test`),
   credentials: (id: number) => get<Record<string, unknown>>(`/admin/accounts/${id}/credentials`),
   unlink:      (id: number, poolId?: number) => del<void>(`/admin/accounts/${id}/pool${poolId ? `?pool_id=${poolId}` : ''}`),
   quota:       (id: number) => get<unknown>(`/admin/accounts/${id}/quota`),
