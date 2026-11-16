@@ -1324,7 +1324,7 @@ Examples:
   ourcodex init http://proxy.example.com:8080 sk-proxy-abc123
   ourcodex login http://proxy.example.com:8080
   ourcodex "explain this code"
-  ourcodex --model gpt-5.4 "write tests for this"
+  ourcodex "write tests for this"
   ourcodex usage
   ourcodex status
   ourcodex logout

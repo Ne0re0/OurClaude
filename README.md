@@ -58,7 +58,7 @@ ourcodex
 Any normal Codex arguments can follow the wrapper name:
 
 ```bash
-ourcodex --model gpt-5.4 "review this repository"
+ourcodex "review this repository"
 ourcodex exec "run the tests and fix failures"
 ```
 

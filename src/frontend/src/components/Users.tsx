@@ -155,7 +155,7 @@ function CreateUserModal({ pools, teams, onClose }: { pools: Pool[]; teams: Team
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Allowed models (empty = all)</label>
             <input
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
-              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="e.g. gpt-5.4,gpt-5.3-codex"
+              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="e.g. gpt-6.1-sol,gpt-6-astra"
             />
             <p className="text-xs text-gray-400 mt-1">Comma-separated model names. Leave empty to allow all.</p>
           </div>
@@ -292,7 +292,7 @@ function EditUserModal({ user, pools, teams, onClose }: { user: User; pools: Poo
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Allowed models (empty = all)</label>
-            <input className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400" value={allowedModels2} onChange={e => setAllowedModels2(e.target.value)} placeholder="e.g. gpt-5.4,gpt-5.3-codex" />
+            <input className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400" value={allowedModels2} onChange={e => setAllowedModels2(e.target.value)} placeholder="e.g. gpt-6.1-sol,gpt-6-astra" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IP whitelist (empty = all)</label>

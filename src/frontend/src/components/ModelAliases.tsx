@@ -32,7 +32,7 @@ function CreateAliasModal({ onClose }: { onClose: () => void }) {
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Target model</label>
             <input
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
-              value={target} onChange={e => setTarget(e.target.value)} placeholder="e.g. gpt-5.3-codex"
+              value={target} onChange={e => setTarget(e.target.value)} placeholder="e.g. gpt-6.1-sol"
             />
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -72,7 +72,7 @@ export default function ModelAliases() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Model Aliases</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Map custom names to real OpenAI models. Example: alias <code className="text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">default</code> → <code className="text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">gpt-5.3-codex</code>.</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Map custom names to models available in the connected account's Codex catalog. Example: alias <code className="text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">default</code> → <code className="text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">gpt-6.1-sol</code>.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
