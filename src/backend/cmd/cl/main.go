@@ -29,6 +29,7 @@ var binaryToken = "OCBINTOK:00000000000000000000000000000000"
 
 const configFile = ".ourcodex/config.json"
 const codexCredsFile = ".codex/auth.json"
+const setupCodexHome = ".ourcodex/codex-login"
 
 type Config struct {
 	ServerURL string `json:"server_url"`
@@ -67,6 +68,10 @@ func codexCredsPath() string {
 	if err != nil {
 		return ""
 	}
+	setupPath := filepath.Join(home, setupCodexHome, "auth.json")
+	if _, err := os.Stat(setupPath); err == nil {
+		return setupPath
+	}
 	return filepath.Join(home, codexCredsFile)
 }
 
@@ -101,9 +106,13 @@ func saveConfig(cfg *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// readLocalCreds reads ~/.codex/auth.json and returns nil if not found or invalid.
+// readLocalCreds reads the dedicated setup credential when present, or the
+// user's normal Codex credential for older installations.
 func readLocalCreds() *codexCredentials {
-	path := codexCredsPath()
+	return readCodexCredsAt(codexCredsPath())
+}
+
+func readCodexCredsAt(path string) *codexCredentials {
 	if path == "" {
 		return nil
 	}
@@ -220,17 +229,23 @@ func main() {
 // ourcodex login <server_url> [token]
 func cmdLogin(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ourcodex login <server_url> [token] [--auto-share]")
+		fmt.Fprintln(os.Stderr, "usage: ourcodex login <server_url> [token] [--auto-share|--setup-login]")
 		fmt.Fprintln(os.Stderr, "example: ourcodex login http://proxy.example.com:8080")
 		os.Exit(1)
 	}
 
-	// Parse --auto-share flag
+	// Parse account-sharing flags.
 	autoShare := false
+	setupLogin := false
+	noShare := false
 	filtered := make([]string, 0, len(args))
 	for _, a := range args {
 		if a == "--auto-share" {
 			autoShare = true
+		} else if a == "--setup-login" {
+			setupLogin = true
+		} else if a == "--no-share" {
+			noShare = true
 		} else {
 			filtered = append(filtered, a)
 		}
@@ -309,7 +324,17 @@ func cmdLogin(args []string) {
 	fmt.Printf("Logged in to %s\n", serverURL)
 	fmt.Printf("  Config saved to ~/%s\n", configFile)
 
-	offerCredentialImport(serverURL, token, autoShare)
+	if noShare {
+		return
+	} else if setupLogin {
+		if err := ensureSetupCodexLogin(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: Codex account setup failed: %v\n", err)
+			os.Exit(1)
+		}
+		offerCredentialImport(serverURL, token, true)
+	} else {
+		offerCredentialImport(serverURL, token, autoShare)
+	}
 }
 
 // ourcodex init <server_url> [token]
@@ -368,22 +393,13 @@ func cmdInit(args []string) {
 func offerCredentialImport(serverURL, token string, autoShare bool) {
 	creds := readLocalCreds()
 	if creds == nil {
-		fmt.Printf("\nNo Codex account found in ~/%s.\n", codexCredsFile)
+		fmt.Println("\nNo local Codex account found.")
 		fmt.Printf("If you have a Codex account, log in with the Codex CLI first, then re-run 'ourcodex login'.\n")
 		fmt.Printf("\nYou can now use: ourcodex <codex-args>\n")
 		return
 	}
 
-	// Show what was found (truncated for privacy)
-	accessPreview := creds.Tokens.AccessToken
-	if len(accessPreview) > 20 {
-		accessPreview = accessPreview[:12] + "..." + accessPreview[len(accessPreview)-4:]
-	}
-	fmt.Printf("\nFound Codex account in ~/%s\n", codexCredsFile)
-	fmt.Printf("  Access token:  %s\n", accessPreview)
-	if creds.Tokens.AccountID != "" {
-		fmt.Printf("  Account ID:    %s\n", creds.Tokens.AccountID)
-	}
+	fmt.Printf("\nFound Codex credentials in %s\n", codexCredsPath())
 
 	if autoShare {
 		fmt.Println("\nSharing Codex account with proxy (auto-share enabled)...")
@@ -1313,7 +1329,7 @@ func printHelp() {
 Usage:
   ourcodex account-login <server> [pairing_token]  Connect ChatGPT through browser OAuth
   ourcodex init <server_url> [token]    Setup proxy + optionally share your Codex account
-  ourcodex login <server_url> [token]   Configure proxy connection (no account sharing)
+  ourcodex login <server_url> [token]   Configure proxy connection; --setup-login opens Codex sign-in
   ourcodex logout                       Remove proxy configuration
   ourcodex status                       Show current configuration
   ourcodex usage                        Show your token usage stats
@@ -1337,7 +1353,8 @@ Config stored in: ~/.ourcodex/config.json
 
 Account sharing (ourcodex init):
   If you have a Codex account connected locally, ourcodex init will offer to share
-  it with the proxy. The proxy will automatically keep your local credentials
-  (~/.codex/auth.json) in sync after token rotations.
+  it with the proxy. A setup link uses a separate Codex login under
+  ~/.ourcodex/codex-login and imports it automatically. The proxy keeps the
+  imported credentials in sync after token rotations.
 `)
 }

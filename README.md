@@ -25,7 +25,7 @@ OurCodex supports:
 - OpenAI API keys through the public Responses API
 - account pools, model allowlists, per-user token quotas, budgets, and RPM limits
 - Responses API streaming and usage accounting
-- Codex primary/secondary rate-limit snapshots from real `x-codex-*` response headers
+- per-account Codex quota reads for both OAuth sign-in types, plus updates from `x-codex-*` response headers
 - model aliases, optional instruction injection, response caching, webhooks, audit logs, and Prometheus metrics
 - setup links, downloadable `ourcodex` binaries, owned-account sync, and MCP configuration sync
 
@@ -67,7 +67,12 @@ sudo mv ./ourcodex /usr/local/bin/ourcodex
 ```
 
 An administrator can instead generate a user setup link, which provides a
-one-command OurCodex installer with the proxy token already configured.
+one-command OurCodex installer with the proxy token already configured. With
+**Sign in to Codex and share account** selected, the installer opens the
+official Codex browser login, stores its credentials separately under
+`~/.ourcodex/codex-login`, and imports the account into the proxy. The Codex
+CLI must already be installed on that computer. The setup link grants access
+to the user's proxy account, so share it only with that user.
 
 Any normal Codex arguments can follow the wrapper name:
 
@@ -110,6 +115,21 @@ Responses API and remain managed by OurCodex.
 Choose “API Key” when adding an account and paste an OpenAI API key. API-key and
 Sign in with ChatGPT accounts are sent to `OPENAI_API_URL`; legacy OAuth
 accounts are sent to `CHATGPT_CODEX_URL`.
+
+### OpenAI quotas
+
+The server attempts to read each OAuth account's Codex usage on startup, every
+three minutes, and when an admin selects **Refresh quotas**. It uses that
+account's stored OAuth credential; no model request is needed. The Quotas page
+shows reported five-hour and weekly percentages, reset times, plan type, and
+credit balance when available. A failed read is shown per account and keeps
+its last successful snapshot. Sign in with ChatGPT tokens issued for the public
+Responses API may be rejected by the ChatGPT quota endpoint. For those accounts,
+import Codex CLI `auth.json` credentials in **Accounts → Add OAuth Account →
+Legacy fallback** to allow quota reads.
+
+API-key accounts use a different organization usage system and are not included
+in these ChatGPT plan quota percentages.
 
 ### Account statuses
 

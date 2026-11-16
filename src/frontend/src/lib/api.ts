@@ -253,6 +253,10 @@ export const quotasApi = {
 export interface AccountQuotaData {
   id: number
   account_id: number
+  source?: 'usage_api' | 'response_headers'
+  plan_type?: string
+  allowed?: boolean
+  limit_reached?: boolean
   primary_pct: number
   primary_window_minutes?: number
   primary_resets?: string
@@ -266,11 +270,25 @@ export interface AccountQuotaData {
   updated_at: string
 }
 
+export interface WindowUsage {
+  requests: number
+  tokens: number
+}
+
 export interface AccountQuotaWithInfo extends AccountQuotaData {
   account_name: string
   account_type: string
+  /** "siwc" for Sign in with ChatGPT accounts, "codex" for legacy auth.json ones. */
+  oauth_provider: string
   status: string
+  /** When the account hit its usage limit; set only while it is exhausted. */
+  exhausted_at?: string
+  last_used_at?: string
+  last_error?: string
   pools?: Pool[]
+  /** Token-bearing responses this account served through OurCodex. */
+  usage_5h: WindowUsage
+  usage_7d: WindowUsage
 }
 
 export interface PoolQuotaAgg {

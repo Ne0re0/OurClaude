@@ -59,8 +59,8 @@ function AutoInstall({ origin, token }: { origin: string; token: string }) {
   const url = autoShare ? `${origin}/api/install/${token}` : `${origin}/api/install/${token}?no-share=1`
   const cmd = `curl -sSL ${url} | sudo bash`
   const note = autoShare
-    ? 'Includes auto-share: your local Codex account will be linked to the proxy automatically.'
-    : 'Without auto-share: you will need to manually share your Codex account later.'
+    ? 'Opens the official Codex browser login in a separate local profile, then securely imports that account into the proxy. Requires the Codex CLI.'
+    : 'Configures the proxy only. No Codex browser login or account import.'
   return (
     <div>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">One command to download, install, and login:</p>
@@ -75,7 +75,7 @@ function AutoInstall({ origin, token }: { origin: string; token: string }) {
           onChange={e => setAutoShare(e.target.checked)}
           className="rounded border-gray-300 text-brand-500 focus:ring-brand-500"
         />
-        <span className="text-xs text-gray-600 dark:text-gray-400">Auto-share Codex account with proxy</span>
+        <span className="text-xs text-gray-600 dark:text-gray-400">Sign in to Codex and share account with proxy</span>
       </label>
       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{note}</p>
     </div>

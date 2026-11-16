@@ -41,6 +41,7 @@ type CodexAccount struct {
 	ExpiresAt         time.Time  `json:"expires_at"`
 	AccountType       string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
 	Status            string     `gorm:"default:'active'" json:"status"`
+	ExhaustedAt       *time.Time `json:"exhausted_at,omitempty"` // when the account last became exhausted
 	LastError         string     `json:"last_error,omitempty"`
 	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 	OwnerUserID       *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
@@ -248,6 +249,10 @@ type MCPServer struct {
 type AccountQuota struct {
 	ID                     uint      `gorm:"primarykey" json:"id"`
 	AccountID              uint      `gorm:"uniqueIndex;not null" json:"account_id"`
+	Source                 string    `json:"source,omitempty"` // usage_api or response_headers
+	PlanType               string    `json:"plan_type,omitempty"`
+	Allowed                *bool     `json:"allowed,omitempty"`
+	LimitReached           bool      `json:"limit_reached,omitempty"`
 	PrimaryPct             float64   `json:"primary_pct"`
 	PrimaryWindowMinutes   *int64    `json:"primary_window_minutes,omitempty"`
 	PrimaryResets          string    `json:"primary_resets,omitempty"`

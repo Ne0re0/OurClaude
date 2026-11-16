@@ -185,6 +185,10 @@ func TestServeHTTPRecordsUsageAndFailsOverOnPlanLimits(t *testing.T) {
 		t.Fatalf("late-limit response altered: %d %q", resp.Code, resp.Body.String())
 	}
 	eventually(t, "mid-stream limit to exhaust the account", func() bool { return accountStatus(db, limited) == "exhausted" })
+	firstLimitedAt := exhaustedAt(db, limited)
+	if firstLimitedAt == nil {
+		t.Fatal("exhausted account has no exhausted_at")
+	}
 
 	// 4. When every account is at its limit, the client is told to back off.
 	db.Model(&database.CodexAccount{}).Where("name = ?", healthy).Update("status", "active")
@@ -193,4 +197,14 @@ func TestServeHTTPRecordsUsageAndFailsOverOnPlanLimits(t *testing.T) {
 	if resp.Code != http.StatusTooManyRequests || !strings.Contains(resp.Body.String(), "usage limit") {
 		t.Fatalf("all-limited response: %d %s", resp.Code, resp.Body.String())
 	}
+	// Retrying an exhausted account keeps the time its limit was first hit.
+	if again := exhaustedAt(db, limited); again == nil || !again.Equal(*firstLimitedAt) {
+		t.Fatalf("exhausted_at moved from %v to %v", firstLimitedAt, again)
+	}
+}
+
+func exhaustedAt(db *gorm.DB, token string) *time.Time {
+	var account database.CodexAccount
+	db.Where("name = ?", token).First(&account)
+	return account.ExhaustedAt
 }

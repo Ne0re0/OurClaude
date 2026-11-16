@@ -360,6 +360,7 @@ func (h *AccountsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.db.Where("account_id = ?", id).Delete(&database.AccountPool{})
+	h.db.Where("account_id = ?", id).Delete(&database.AccountQuota{})
 	if err := h.db.Delete(&database.CodexAccount{}, id).Error; err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to delete account"))
 		return
@@ -658,21 +659,42 @@ func (h *AccountsHandler) AllQuotas(w http.ResponseWriter, r *http.Request) {
 	var accounts []database.CodexAccount
 	h.db.Preload("Pools").Where("account_type = ?", "oauth").Find(&accounts)
 
+	// Sign in with ChatGPT accounts never send x-codex rate-limit headers, and
+	// OpenAI exposes no plan-usage percentage for them, so report the traffic
+	// OurCodex observed over the five-hour and weekly windows OpenAI uses.
+	now := time.Now()
+	usage5h := accountUsageSince(h.db, now.Add(-5*time.Hour))
+	usage7d := accountUsageSince(h.db, now.Add(-7*24*time.Hour))
+
 	type quotaWithAccount struct {
 		database.AccountQuota
-		AccountName string           `json:"account_name"`
-		AccountType string           `json:"account_type"`
-		Status      string           `json:"status"`
-		Pools       []*database.Pool `json:"pools,omitempty"`
+		AccountName   string           `json:"account_name"`
+		AccountType   string           `json:"account_type"`
+		OAuthProvider string           `json:"oauth_provider"`
+		Status        string           `json:"status"`
+		ExhaustedAt   *time.Time       `json:"exhausted_at,omitempty"`
+		LastUsedAt    *time.Time       `json:"last_used_at,omitempty"`
+		LastError     string           `json:"last_error,omitempty"`
+		Pools         []*database.Pool `json:"pools,omitempty"`
+		Usage5h       windowUsage      `json:"usage_5h"`
+		Usage7d       windowUsage      `json:"usage_7d"`
 	}
 
 	result := make([]quotaWithAccount, 0, len(accounts))
 	for _, acc := range accounts {
 		entry := quotaWithAccount{
-			AccountName: acc.Name,
-			AccountType: acc.AccountType,
-			Status:      acc.Status,
-			Pools:       acc.Pools,
+			AccountName:   acc.Name,
+			AccountType:   acc.AccountType,
+			OAuthProvider: acc.OAuthProvider,
+			Status:        acc.Status,
+			LastUsedAt:    acc.LastUsedAt,
+			LastError:     acc.LastError,
+			Pools:         acc.Pools,
+			Usage5h:       usage5h[acc.ID],
+			Usage7d:       usage7d[acc.ID],
+		}
+		if acc.Status == "exhausted" {
+			entry.ExhaustedAt = acc.ExhaustedAt
 		}
 		// Try to find quota data for this account
 		var q database.AccountQuota
@@ -686,6 +708,32 @@ func (h *AccountsHandler) AllQuotas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// windowUsage is the traffic an account served through OurCodex in a window.
+type windowUsage struct {
+	Requests int64 `json:"requests"`
+	Tokens   int64 `json:"tokens"`
+}
+
+// accountUsageSince sums token-bearing responses per account since a time.
+// Responses without tokens (errors, model listings) are not counted.
+func accountUsageSince(db *gorm.DB, since time.Time) map[uint]windowUsage {
+	var rows []struct {
+		AccountID uint
+		Requests  int64
+		Tokens    int64
+	}
+	db.Model(&database.UsageLog{}).
+		Select("account_id, COUNT(*) AS requests, COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens").
+		Where("created_at >= ? AND input_tokens + output_tokens > 0", since).
+		Group("account_id").
+		Scan(&rows)
+	usage := make(map[uint]windowUsage, len(rows))
+	for _, row := range rows {
+		usage[row.AccountID] = windowUsage{Requests: row.Requests, Tokens: row.Tokens}
+	}
+	return usage
 }
 
 // POST /api/admin/accounts/{id}/toggle — toggle active/disabled status

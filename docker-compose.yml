@@ -8,11 +8,11 @@ services:
       args:
          CLI_PLATFORMS: linux-amd64
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
     volumes:
       - ourcodex-data:/data
     environment:
-      - WEB_PORT=3000
+      - WEB_PORT=${WEB_PORT:-3000}
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD is required on first run}
@@ -35,7 +35,7 @@ services:
       - SYSTEM_PROMPT_INJECT=${SYSTEM_PROMPT_INJECT:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:${WEB_PORT:-3000}/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

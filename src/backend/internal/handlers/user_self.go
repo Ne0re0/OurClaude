@@ -198,7 +198,7 @@ func (h *UserSelfHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/user/import-account
 // Imports ~/.codex/auth.json content into the proxy as a CodexAccount
-// owned by this user. If an owned account already exists, it is updated.
+// owned by this user. A matching legacy Codex account is updated.
 func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) {
 	if h.enc == nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("encryption not configured"))
@@ -257,14 +257,13 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Dedup by rotating refresh token, stable ChatGPT account, then owner.
+	// Dedup by rotating refresh token or stable ChatGPT account. A user's SIWC
+	// account must stay separate: those credentials use a different upstream.
 	rtHash := oauth.RefreshTokenHash(creds.RefreshToken)
 
 	var existing database.CodexAccount
 	found := false
-	if err := h.db.Where("refresh_token_hash = ? OR chat_gpt_account_id = ?", rtHash, creds.AccountID).First(&existing).Error; err == nil {
-		found = true
-	} else if err := h.db.Where("owner_user_id = ?", user.ID).First(&existing).Error; err == nil {
+	if err := h.db.Where("o_auth_provider <> ? AND (refresh_token_hash = ? OR chat_gpt_account_id = ?)", "siwc", rtHash, creds.AccountID).First(&existing).Error; err == nil {
 		found = true
 	}
 
@@ -484,7 +483,7 @@ func (h *UserSelfHandler) OwnedAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var account database.CodexAccount
-	if err := h.db.Where("owner_user_id = ?", user.ID).First(&account).Error; err != nil {
+	if err := h.db.Where("owner_user_id = ? AND o_auth_provider <> ?", user.ID, "siwc").First(&account).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("no owned account"))
 		return
 	}

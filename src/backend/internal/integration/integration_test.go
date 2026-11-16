@@ -601,3 +601,129 @@ func TestUsageLogsLinkToTheirConversation(t *testing.T) {
 		t.Fatalf("conversation detail: status %d, response %q", detail.StatusCode, body.Response)
 	}
 }
+
+// ChatGPT plan (siwc) accounts never send rate-limit headers, so the quotas
+// API reports their limit status and the traffic OurCodex served instead.
+func TestQuotasReportPlanAccountUsage(t *testing.T) {
+	ts, _, db := setupServerDB(t)
+	cookies := login(t, ts)
+
+	limitedAt := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
+	plan := database.CodexAccount{Name: "plan", AccessToken: "x", RefreshToken: "x", AccountType: "oauth",
+		OAuthProvider: "siwc", Status: "exhausted", ExhaustedAt: &limitedAt}
+	legacy := database.CodexAccount{Name: "legacy", AccessToken: "x", RefreshToken: "x", AccountType: "oauth",
+		OAuthProvider: "codex", Status: "active"}
+	db.Create(&plan)
+	db.Create(&legacy)
+	db.Create(&database.AccountQuota{AccountID: legacy.ID, PrimaryPct: 42, UpdatedAt: time.Now()})
+
+	now := time.Now()
+	for _, entry := range []database.UsageLog{
+		{AccountID: plan.ID, InputTokens: 80, OutputTokens: 20, StatusCode: 200, CreatedAt: now.Add(-2 * time.Hour)},
+		{AccountID: plan.ID, InputTokens: 900, OutputTokens: 100, StatusCode: 200, CreatedAt: now.Add(-72 * time.Hour)},
+		{AccountID: plan.ID, InputTokens: 5000, StatusCode: 200, CreatedAt: now.Add(-10 * 24 * time.Hour)}, // outside both windows
+		{AccountID: plan.ID, StatusCode: 403, CreatedAt: now.Add(-time.Hour)},                              // no tokens: not counted
+		{AccountID: legacy.ID, InputTokens: 7, StatusCode: 200, CreatedAt: now.Add(-time.Hour)},
+	} {
+		entry.UserID = 1
+		db.Create(&entry)
+	}
+
+	resp := getJSON(t, ts, "/api/admin/quotas", cookies)
+	defer resp.Body.Close()
+	type window struct{ Requests, Tokens int64 }
+	var quotas []struct {
+		AccountID     uint       `json:"account_id"`
+		OAuthProvider string     `json:"oauth_provider"`
+		Status        string     `json:"status"`
+		ExhaustedAt   *time.Time `json:"exhausted_at"`
+		PrimaryPct    float64    `json:"primary_pct"`
+		Usage5h       window     `json:"usage_5h"`
+		Usage7d       window     `json:"usage_7d"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&quotas); err != nil {
+		t.Fatal(err)
+	}
+	if len(quotas) != 2 {
+		t.Fatalf("expected 2 accounts, got %+v", quotas)
+	}
+	for _, q := range quotas {
+		switch q.AccountID {
+		case plan.ID:
+			if q.OAuthProvider != "siwc" || q.Status != "exhausted" || q.ExhaustedAt == nil || !q.ExhaustedAt.Equal(limitedAt) {
+				t.Errorf("plan account status: %+v", q)
+			}
+			if q.Usage5h != (window{1, 100}) || q.Usage7d != (window{2, 1100}) {
+				t.Errorf("plan account usage: 5h %+v, 7d %+v", q.Usage5h, q.Usage7d)
+			}
+		case legacy.ID:
+			if q.OAuthProvider != "codex" || q.PrimaryPct != 42 || q.ExhaustedAt != nil || q.Usage5h != (window{1, 7}) {
+				t.Errorf("legacy account: %+v", q)
+			}
+		}
+	}
+
+	// Deleting an account also removes its rate-limit snapshot.
+	req, _ := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/admin/accounts/%d", ts.URL, legacy.ID), nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	del, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	del.Body.Close()
+	var snapshots int64
+	db.Model(&database.AccountQuota{}).Where("account_id = ?", legacy.ID).Count(&snapshots)
+	if del.StatusCode != http.StatusOK || snapshots != 0 {
+		t.Fatalf("delete: status %d, %d snapshot rows left", del.StatusCode, snapshots)
+	}
+}
+
+func TestUserSetupImportPreservesSIWCAccount(t *testing.T) {
+	ts, _, db := setupServerDB(t)
+	user := database.User{Name: "setup-user", APIToken: "sk-proxy-setup-test", Active: true}
+	pool := database.Pool{Name: "setup-pool"}
+	db.Create(&user)
+	db.Create(&pool)
+	db.Create(&database.UserPool{UserID: user.ID, PoolID: pool.ID})
+	si := database.CodexAccount{Name: "browser login", AccountType: "oauth", OAuthProvider: "siwc",
+		AccessToken: "stored-siwc-access", RefreshToken: "stored-siwc-refresh", Status: "active", OwnerUserID: &user.ID}
+	db.Create(&si)
+	db.Create(&database.AccountPool{AccountID: si.ID, PoolID: pool.ID})
+
+	for _, refresh := range []string{"first-refresh", "rotated-refresh"} {
+		credentials, _ := json.Marshal(map[string]interface{}{
+			"auth_mode": "chatgpt",
+			"tokens":    map[string]string{"access_token": "legacy-access", "refresh_token": refresh, "account_id": "chat-account"},
+		})
+		body, _ := json.Marshal(map[string]string{"credentials_json": string(credentials)})
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/user/import-account", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+user.APIToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			t.Fatalf("import status %d", resp.StatusCode)
+		}
+	}
+	var accounts []database.CodexAccount
+	db.Order("id").Find(&accounts)
+	if len(accounts) != 2 || accounts[0].ID != si.ID || accounts[0].OAuthProvider != "siwc" ||
+		accounts[1].OAuthProvider != "codex" || accounts[1].ChatGPTAccountID != "chat-account" {
+		t.Fatalf("setup import changed account identities: %+v", accounts)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/user/owned-account", nil)
+	req.Header.Set("Authorization", "Bearer "+user.APIToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("owned legacy account status %d", resp.StatusCode)
+	}
+}

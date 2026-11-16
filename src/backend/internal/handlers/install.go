@@ -92,12 +92,14 @@ func generateInstallScript(serverURL, apiToken string, dlLinks map[string]string
 
 	shareFlag := ""
 	if autoShare {
-		shareFlag = " --auto-share"
+		shareFlag = " --setup-login"
+	} else {
+		shareFlag = " --no-share"
 	}
 	sb.WriteString("# Auto-login as the real user (not root)\n")
 	sb.WriteString("if [ -n \"${SUDO_USER:-}\" ]; then\n")
 	sb.WriteString("    echo \"Configuring for user: $SUDO_USER\"\n")
-	sb.WriteString(fmt.Sprintf("    sudo -u \"$SUDO_USER\" ourcodex login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
+	sb.WriteString(fmt.Sprintf("    sudo -H -u \"$SUDO_USER\" ourcodex login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
 	sb.WriteString("else\n")
 	sb.WriteString(fmt.Sprintf("    ourcodex login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
 	sb.WriteString("fi\n")

@@ -331,9 +331,11 @@ func (m *Manager) scoredPick(candidates []database.CodexAccount) (*database.Code
 }
 
 func (m *Manager) MarkExhausted(accountID uint) {
+	// exhausted_at records when the limit was first hit, so an account that is
+	// retried as a last resort keeps its original time.
 	m.db.Model(&database.CodexAccount{}).
-		Where("id = ?", accountID).
-		Updates(map[string]interface{}{"status": "exhausted"})
+		Where("id = ? AND status <> ?", accountID, "exhausted").
+		Updates(map[string]interface{}{"status": "exhausted", "exhausted_at": time.Now()})
 
 	if m.webhooks != nil {
 		m.webhooks.Dispatch("account.exhausted", map[string]interface{}{

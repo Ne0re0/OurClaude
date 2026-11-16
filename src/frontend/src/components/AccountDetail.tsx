@@ -246,13 +246,16 @@ export default function AccountDetail() {
       )}
 
       {/* Quota bars (OAuth only) */}
-      {isOAuth && quotaData && !quotaData.error && (
+      {isOAuth && quotaData && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 space-y-4">
           <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Codex Quota</h2>
+          {quotaData.plan_type && <p className="text-xs text-gray-500 dark:text-gray-400">{quotaData.plan_type} plan</p>}
+          {quotaData.error && <p className="text-xs text-red-500">Latest refresh failed: {quotaData.error}. Showing the last snapshot.</p>}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <QuotaBar label={`Primary${quotaData.primary_window_minutes ? ` (${quotaData.primary_window_minutes}m)` : ''}`} pct={quotaData.primary_pct} resets={quotaData.primary_resets} />
-            <QuotaBar label={`Secondary${quotaData.secondary_window_minutes ? ` (${quotaData.secondary_window_minutes}m)` : ''}`} pct={quotaData.secondary_pct} resets={quotaData.secondary_resets} />
+            {(quotaData.primary_window_minutes || quotaData.primary_resets) && <QuotaBar label={`Primary${quotaData.primary_window_minutes ? ` (${quotaData.primary_window_minutes}m)` : ''}`} pct={quotaData.primary_pct} resets={quotaData.primary_resets} />}
+            {(quotaData.secondary_window_minutes || quotaData.secondary_resets) && <QuotaBar label={`Secondary${quotaData.secondary_window_minutes ? ` (${quotaData.secondary_window_minutes}m)` : ''}`} pct={quotaData.secondary_pct} resets={quotaData.secondary_resets} />}
           </div>
+          {!quotaData.primary_window_minutes && !quotaData.primary_resets && !quotaData.secondary_window_minutes && !quotaData.secondary_resets && <p className="text-xs text-gray-500 dark:text-gray-400">No timed quota windows reported.</p>}
           {quotaData.credits_has && (
             <p className="text-xs text-gray-500 dark:text-gray-400">
               Credits: {quotaData.credits_unlimited ? 'Unlimited' : quotaData.credits_balance || 'Available'}

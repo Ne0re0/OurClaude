@@ -69,7 +69,7 @@ func New(cfg *config.Config, db *gorm.DB, frontendFS fs.FS) *Server {
 		logStream:   sse.New(),
 		statsStream: sse.New(),
 		settings:    settingsSvc,
-		quotaPoller: quota.New(),
+		quotaPoller: quota.New(db, enc, oauthRefresher, cfg.OpenAIAPIURL, cfg.ChatGPTURL),
 		frontendFS:  frontendFS,
 	}
 }
@@ -173,7 +173,7 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		r.Post("/api/admin/quotas/refresh", func(w http.ResponseWriter, r *http.Request) {
 			s.quotaPoller.PollNow()
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"message":"Codex rate limits update on the next proxied response"}`))
+			w.Write([]byte(`{"message":"Account quota refresh started"}`))
 		})
 
 		// Stats

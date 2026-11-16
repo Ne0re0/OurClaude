@@ -407,12 +407,14 @@ function QuotaModal({ account, onClose }: { account: Account; onClose: () => voi
           <h2 className="text-lg font-semibold dark:text-white">Codex Quota — {account.name}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X className="w-5 h-5" /></button>
         </div>
-        {isLoading && <p className="text-sm text-gray-400 dark:text-gray-500 py-4 text-center">Loading observed rate limits...</p>}
+        {isLoading && <p className="text-sm text-gray-400 dark:text-gray-500 py-4 text-center">Loading account quota...</p>}
         {error && <p className="text-sm text-red-500">{(error as Error).message}</p>}
-        {quota && !quota.error && (
+        {quota && (
           <div>
-            <QuotaBar label={`Primary${quota.primary_window_minutes ? ` (${quota.primary_window_minutes}m)` : ''}`} pct={quota.primary_pct} resets={quota.primary_resets} />
-            <QuotaBar label={`Secondary${quota.secondary_window_minutes ? ` (${quota.secondary_window_minutes}m)` : ''}`} pct={quota.secondary_pct} resets={quota.secondary_resets} />
+            {quota.plan_type && <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">{quota.plan_type} plan</p>}
+            {(quota.primary_window_minutes || quota.primary_resets) && <QuotaBar label={`Primary${quota.primary_window_minutes ? ` (${quota.primary_window_minutes}m)` : ''}`} pct={quota.primary_pct} resets={quota.primary_resets} />}
+            {(quota.secondary_window_minutes || quota.secondary_resets) && <QuotaBar label={`Secondary${quota.secondary_window_minutes ? ` (${quota.secondary_window_minutes}m)` : ''}`} pct={quota.secondary_pct} resets={quota.secondary_resets} />}
+            {!quota.primary_window_minutes && !quota.primary_resets && !quota.secondary_window_minutes && !quota.secondary_resets && <p className="text-sm text-gray-500 dark:text-gray-400">No timed quota windows reported.</p>}
             {quota.credits_has && (
               <div className="mt-4 p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Credits</p>
