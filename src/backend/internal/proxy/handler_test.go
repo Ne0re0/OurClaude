@@ -17,6 +17,7 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 		auth      string
 		accountID string
 		body      string
+		headers   http.Header
 	}
 	requests := make(chan observed, 3)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +27,7 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 			auth:      r.Header.Get("Authorization"),
 			accountID: r.Header.Get("ChatGPT-Account-ID"),
 			body:      string(body),
+			headers:   r.Header.Clone(),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_test"}`))
@@ -64,6 +66,11 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "http://ourcodex.test/proxy/v1/responses?stream=true", strings.NewReader(`{"model":"gpt-test"}`))
+			req.Header.Set("CF-Connecting-IP", "203.0.113.1")
+			req.Header.Set("CF-Ray", "test-ray")
+			req.Header.Set("X-Forwarded-For", "203.0.113.1")
+			req.Header.Set("X-Real-IP", "203.0.113.1")
+			req.Header.Set("OpenAI-Beta", "responses=experimental")
 			resp, err := h.forward(req, []byte(`{"model":"gpt-test"}`), &test.account, user)
 			if err != nil {
 				t.Fatalf("forward: %v", err)
@@ -79,6 +86,14 @@ func TestForwardRoutesResponsesByAccountType(t *testing.T) {
 			}
 			if got.accountID != test.wantAccount {
 				t.Errorf("ChatGPT-Account-ID = %q, want %q", got.accountID, test.wantAccount)
+			}
+			for _, key := range []string{"CF-Connecting-IP", "CF-Ray", "X-Forwarded-For", "X-Real-IP"} {
+				if got.headers.Get(key) != "" {
+					t.Errorf("upstream received %s", key)
+				}
+			}
+			if got.headers.Get("OpenAI-Beta") != "responses=experimental" {
+				t.Errorf("OpenAI-Beta was not forwarded")
 			}
 		})
 	}

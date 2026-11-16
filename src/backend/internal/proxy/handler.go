@@ -543,7 +543,13 @@ func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexA
 
 	for key, values := range r.Header {
 		k := strings.ToLower(key)
-		if k == "authorization" || k == "host" || k == "x-api-key" || k == "chatgpt-account-id" || k == "content-length" || k == "accept-encoding" {
+		// Headers added by the public reverse proxy describe the client-to-proxy
+		// hop. In particular, forwarding CF-Connecting-IP to the ChatGPT
+		// upstream causes Cloudflare to reject the request with an HTML 403.
+		if k == "authorization" || k == "host" || k == "x-api-key" || k == "chatgpt-account-id" ||
+			k == "content-length" || k == "accept-encoding" || k == "forwarded" ||
+			k == "x-real-ip" || k == "true-client-ip" || k == "cdn-loop" ||
+			strings.HasPrefix(k, "cf-") || strings.HasPrefix(k, "x-forwarded-") {
 			continue
 		}
 		for _, v := range values {
