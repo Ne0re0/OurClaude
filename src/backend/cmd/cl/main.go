@@ -37,9 +37,10 @@ type Config struct {
 // claudeCredentials mirrors ~/.claude/.credentials.json
 type claudeCredentials struct {
 	ClaudeAiOauth struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresAt    int64  `json:"expiresAt"` // milliseconds
+		AccessToken      string `json:"accessToken"`
+		RefreshToken     string `json:"refreshToken"`
+		ExpiresAt        int64  `json:"expiresAt"` // milliseconds
+		SubscriptionType string `json:"subscriptionType,omitempty"`
 	} `json:"claudeAiOauth"`
 }
 

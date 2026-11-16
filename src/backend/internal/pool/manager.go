@@ -294,9 +294,13 @@ func (m *Manager) scoredPick(candidates []database.ClaudeAccount) (*database.Cla
 		var q database.AccountQuota
 		score := 50.0 // default if no quota data
 		if m.db.Where("account_id = ?", acc.ID).First(&q).Error == nil {
-			score = float64(q.FiveHourPct)
+			if q.FiveHourAvailable {
+				score = float64(q.FiveHourPct)
+			} else if acc.SubscriptionLevel == "ultra" {
+				score = float64(q.SevenDayPct)
+			}
 			// Drain mode: if reset is imminent and usage below 95%, prioritize it
-			if q.FiveHourResets != "" {
+			if q.FiveHourAvailable && q.FiveHourResets != "" {
 				if t, err := time.Parse(time.RFC3339, q.FiveHourResets); err == nil {
 					minutesUntilReset := time.Until(t).Minutes()
 					if minutesUntilReset > 0 && minutesUntilReset < 30 && q.FiveHourPct < 95 {

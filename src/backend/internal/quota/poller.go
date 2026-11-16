@@ -24,7 +24,7 @@ const usageURL = "https://api.anthropic.com/api/oauth/usage"
 
 // apiResponse matches the Anthropic usage API response.
 type apiResponse struct {
-	FiveHour       quotaWindow  `json:"five_hour"`
+	FiveHour       *quotaWindow `json:"five_hour"`
 	SevenDay       quotaWindow  `json:"seven_day"`
 	SevenDayOpus   *quotaWindow `json:"seven_day_opus"`
 	SevenDaySonnet *quotaWindow `json:"seven_day_sonnet"`
@@ -44,14 +44,14 @@ type extraUsage struct {
 
 // Poller periodically fetches Anthropic usage for all OAuth accounts.
 type Poller struct {
-	db              *gorm.DB
-	enc             *crypto.Encryptor
-	settings        *settings.Service
-	client          *http.Client
-	failCount       map[uint]int // consecutive failures per account
-	failCountMu     sync.Mutex
-	pollTimes       []time.Time  // timestamps of recent polls for global rate limit
-	pollTimesMu     sync.Mutex
+	db          *gorm.DB
+	enc         *crypto.Encryptor
+	settings    *settings.Service
+	client      *http.Client
+	failCount   map[uint]int // consecutive failures per account
+	failCountMu sync.Mutex
+	pollTimes   []time.Time // timestamps of recent polls for global rate limit
+	pollTimesMu sync.Mutex
 }
 
 // New creates a quota poller.
@@ -150,7 +150,9 @@ func (p *Poller) pollAll() {
 			// Auto-reset exhausted/error accounts that have available quota
 			if acc.Status == "exhausted" || acc.Status == "error" {
 				var q database.AccountQuota
-				if p.db.Where("account_id = ?", acc.ID).First(&q).Error == nil && q.FiveHourPct < 80 {
+				if p.db.Where("account_id = ?", acc.ID).First(&q).Error == nil &&
+					((q.FiveHourAvailable && q.FiveHourPct < 80) ||
+						(acc.SubscriptionLevel == "ultra" && !q.FiveHourAvailable && q.SevenDayResets != "" && q.SevenDayPct < 80)) {
 					p.db.Model(&acc).Updates(map[string]interface{}{"status": "active", "last_error": ""})
 					log.Printf("quota: auto-reset account %d (%s) — quota at %d%%, was %s", acc.ID, acc.Name, q.FiveHourPct, acc.Status)
 				}
@@ -228,15 +230,18 @@ func (p *Poller) fetchOne(acc database.ClaudeAccount) error {
 	}
 
 	quota := database.AccountQuota{
-		AccountID:      acc.ID,
-		FiveHourPct:    clampPct(data.FiveHour.Utilization),
-		FiveHourResets: ptrStr(data.FiveHour.ResetsAt),
-		SevenDayPct:    clampPct(data.SevenDay.Utilization),
-		SevenDayResets: ptrStr(data.SevenDay.ResetsAt),
-		ExtraEnabled:   false,
-		RawJSON:        string(body),
-		Error:          "",
-		UpdatedAt:      time.Now(),
+		AccountID:         acc.ID,
+		FiveHourAvailable: data.FiveHour != nil,
+		SevenDayPct:       clampPct(data.SevenDay.Utilization),
+		SevenDayResets:    ptrStr(data.SevenDay.ResetsAt),
+		ExtraEnabled:      false,
+		RawJSON:           string(body),
+		Error:             "",
+		UpdatedAt:         time.Now(),
+	}
+	if data.FiveHour != nil {
+		quota.FiveHourPct = clampPct(data.FiveHour.Utilization)
+		quota.FiveHourResets = ptrStr(data.FiveHour.ResetsAt)
 	}
 
 	if data.SevenDayOpus != nil {
@@ -259,7 +264,7 @@ func (p *Poller) fetchOne(acc database.ClaudeAccount) error {
 	p.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "account_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"five_hour_pct", "five_hour_resets",
+			"five_hour_pct", "five_hour_resets", "five_hour_available",
 			"seven_day_pct", "seven_day_resets",
 			"opus_pct", "opus_resets",
 			"sonnet_pct", "sonnet_resets",

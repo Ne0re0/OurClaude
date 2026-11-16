@@ -44,8 +44,16 @@ function StatusIcon({ pct }: { pct: number }) {
   return <CheckCircle className="w-5 h-5 text-green-500" />
 }
 
+function hasFiveHourLimit(q: AccountQuotaWithInfo): boolean {
+  return q.five_hour_available
+}
+
+function maxQuotaPct(q: AccountQuotaWithInfo): number {
+  return Math.max(hasFiveHourLimit(q) ? q.five_hour_pct : 0, q.seven_day_pct, q.opus_pct ?? 0, q.sonnet_pct ?? 0)
+}
+
 function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
-  const maxPct = Math.max(q.five_hour_pct, q.seven_day_pct, q.opus_pct ?? 0, q.sonnet_pct ?? 0)
+  const maxPct = maxQuotaPct(q)
 
   return (
     <div className={`bg-white dark:bg-gray-800 rounded-xl border p-5 transition-colors ${
@@ -64,6 +72,7 @@ function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
               q.status === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
               'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
             }`}>{q.status}</span>
+            {q.subscription_level && <span className="px-1.5 py-0.5 rounded text-xs font-medium shrink-0 bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 capitalize">{q.subscription_level}</span>}
           </div>
           {(q.pools ?? []).length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
@@ -81,7 +90,11 @@ function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
         </div>
       ) : (
         <div className="space-y-3">
-          <UsageBar label="Session (5h)" pct={q.five_hour_pct} resets={q.five_hour_resets} />
+          {hasFiveHourLimit(q) ? (
+            <UsageBar label="Session (5h)" pct={q.five_hour_pct} resets={q.five_hour_resets} />
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{q.subscription_level?.toLowerCase() === 'ultra' ? 'No 5h limit' : 'Session limit not reported'}</p>
+          )}
           <UsageBar label="Weekly (7d)" pct={q.seven_day_pct} resets={q.seven_day_resets} />
           {q.opus_pct != null && (
             <UsageBar label="Opus (7d)" pct={q.opus_pct} resets={q.opus_resets} color={q.opus_pct >= 90 ? 'bg-red-500' : 'bg-purple-500'} />
@@ -152,7 +165,7 @@ export default function Quotas() {
       const inPool = (q.pools ?? []).some(p => String(p.id) === poolFilter)
       if (!inPool) return false
     }
-    const maxPct = Math.max(q.five_hour_pct, q.seven_day_pct, q.opus_pct ?? 0, q.sonnet_pct ?? 0)
+    const maxPct = maxQuotaPct(q)
     if (filter === 'critical') return maxPct >= 90
     if (filter === 'warning') return maxPct >= 70 && maxPct < 90
     if (filter === 'healthy') return maxPct < 70
@@ -160,16 +173,17 @@ export default function Quotas() {
   })
 
   // Summary stats
-  const critical = quotas.filter(q => Math.max(q.five_hour_pct, q.seven_day_pct) >= 90).length
-  const warning = quotas.filter(q => { const m = Math.max(q.five_hour_pct, q.seven_day_pct); return m >= 70 && m < 90 }).length
-  const healthy = quotas.filter(q => Math.max(q.five_hour_pct, q.seven_day_pct) < 70).length
+  const critical = quotas.filter(q => maxQuotaPct(q) >= 90).length
+  const warning = quotas.filter(q => { const m = maxQuotaPct(q); return m >= 70 && m < 90 }).length
+  const healthy = quotas.filter(q => maxQuotaPct(q) < 70).length
   const errored = quotas.filter(q => q.error).length
 
   // Pool averages
   const poolAverages = pools.map(p => {
     const poolQuotas = quotas.filter(q => (q.pools ?? []).some(pp => pp.id === p.id))
-    if (poolQuotas.length === 0) return { pool: p, avgFive: 0, avgSeven: 0, count: 0 }
-    const avgFive = Math.round(poolQuotas.reduce((s, q) => s + q.five_hour_pct, 0) / poolQuotas.length)
+    if (poolQuotas.length === 0) return { pool: p, avgFive: null as number | null, avgSeven: 0, count: 0 }
+    const withFiveHour = poolQuotas.filter(hasFiveHourLimit)
+    const avgFive = withFiveHour.length ? Math.round(withFiveHour.reduce((s, q) => s + q.five_hour_pct, 0) / withFiveHour.length) : null
     const avgSeven = Math.round(poolQuotas.reduce((s, q) => s + q.seven_day_pct, 0) / poolQuotas.length)
     return { pool: p, avgFive, avgSeven, count: poolQuotas.length }
   }).filter(p => p.count > 0)
@@ -259,7 +273,7 @@ export default function Quotas() {
                   <span className="text-xs text-gray-400">{count} accounts</span>
                 </div>
                 <div className="space-y-1.5">
-                  <UsageBar label="Avg session" pct={avgFive} />
+                  {avgFive != null && <UsageBar label="Avg session" pct={avgFive} />}
                   <UsageBar label="Avg weekly" pct={avgSeven} />
                 </div>
               </button>
@@ -289,7 +303,7 @@ export default function Quotas() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered
-            .sort((a, b) => Math.max(b.five_hour_pct, b.seven_day_pct) - Math.max(a.five_hour_pct, a.seven_day_pct))
+            .sort((a, b) => maxQuotaPct(b) - maxQuotaPct(a))
             .map(q => <AccountQuotaCard key={q.account_id} q={q} />)}
         </div>
       )}

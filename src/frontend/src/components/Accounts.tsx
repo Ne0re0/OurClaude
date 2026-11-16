@@ -292,6 +292,7 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
 
 function EditAccountModal({ account, pools, onClose }: { account: Account; pools: Pool[]; onClose: () => void }) {
   const [name, setName] = useState(account.name)
+  const [subscriptionLevel, setSubscriptionLevel] = useState(account.subscription_level ?? '')
   const [mythosModels, setMythosModels] = useState<Set<string>>(new Set((account.mythos_models ?? '').split(',').filter(Boolean)))
   const [selectedPools, setSelectedPools] = useState<Set<number>>(new Set((account.pools ?? []).map(p => p.id)))
   const [error, setError] = useState('')
@@ -302,6 +303,7 @@ function EditAccountModal({ account, pools, onClose }: { account: Account; pools
       name,
       pool_ids: [...selectedPools],
       mythos_models: [...mythosModels].join(','),
+      subscription_level: subscriptionLevel,
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['accounts'] }); onClose() },
     onError: (e: Error) => setError(e.message),
@@ -326,6 +328,22 @@ function EditAccountModal({ account, pools, onClose }: { account: Account; pools
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Pools</label>
             <PoolCheckboxes pools={pools} selected={selectedPools} onChange={setSelectedPools} />
           </div>
+          {account.account_type !== 'apikey' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Claude subscription</label>
+              <select className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white"
+                value={subscriptionLevel} onChange={e => setSubscriptionLevel(e.target.value)}>
+                <option value="">Unknown</option>
+                {!['', 'pro', 'max', 'ultra', 'team', 'enterprise'].includes(subscriptionLevel) && <option value={subscriptionLevel}>{subscriptionLevel}</option>}
+                <option value="pro">Pro</option>
+                <option value="max">Max</option>
+                <option value="ultra">Ultra</option>
+                <option value="team">Team</option>
+                <option value="enterprise">Enterprise</option>
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Set this for existing accounts when the imported credentials did not include a plan.</p>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Mythos access</label>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Enable only models this account can use. Mythos requests route only to enabled accounts.</p>
@@ -647,6 +665,7 @@ export default function Accounts() {
                       <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${isApiKey(account) ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'}`}>
                         {isApiKey(account) ? 'API Key' : 'OAuth'}
                       </span>
+                      {account.subscription_level && <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 capitalize">{account.subscription_level}</span>}
                       {account.owner_user_id && (() => {
                         const owner = users.find(u => u.id === account.owner_user_id)
                         return (

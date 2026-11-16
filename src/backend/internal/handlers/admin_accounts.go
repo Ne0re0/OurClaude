@@ -39,7 +39,11 @@ func refreshTokenHash(plaintext string) string {
 
 // upsertOAuthAccount creates or updates an account based on refresh token hash (dedup).
 // Returns the account and true if it was updated (existing), false if created (new).
-func (h *AccountsHandler) upsertOAuthAccount(name string, accessToken, refreshToken string, expiresAt time.Time, ownerUserID *uint) (*database.ClaudeAccount, bool, error) {
+func (h *AccountsHandler) upsertOAuthAccount(name string, accessToken, refreshToken string, expiresAt time.Time, subscriptionLevel string, ownerUserID *uint) (*database.ClaudeAccount, bool, error) {
+	subscriptionLevel, err := normalizeSubscriptionLevel(subscriptionLevel)
+	if err != nil {
+		return nil, false, err
+	}
 	encAccess, err := h.enc.Encrypt(accessToken)
 	if err != nil {
 		return nil, false, fmt.Errorf("encrypt access: %w", err)
@@ -54,26 +58,34 @@ func (h *AccountsHandler) upsertOAuthAccount(name string, accessToken, refreshTo
 	var existing database.ClaudeAccount
 	if err := h.db.Where("refresh_token_hash = ?", hash).First(&existing).Error; err == nil {
 		// Update existing
-		h.db.Model(&existing).Updates(map[string]interface{}{
+		updates := map[string]interface{}{
 			"access_token":  encAccess,
 			"refresh_token": encRefresh,
 			"expires_at":    expiresAt,
 			"status":        "active",
 			"last_error":    "",
-		})
+		}
+		if subscriptionLevel != "" {
+			updates["subscription_level"] = subscriptionLevel
+		}
+		h.db.Model(&existing).Updates(updates)
+		if subscriptionLevel != "" {
+			existing.SubscriptionLevel = subscriptionLevel
+		}
 		return &existing, true, nil
 	}
 
 	// Create new
 	account := database.ClaudeAccount{
-		Name:             name,
-		AccountType:      "oauth",
-		AccessToken:      encAccess,
-		RefreshToken:     encRefresh,
-		RefreshTokenHash: hash,
-		ExpiresAt:        expiresAt,
-		Status:           "active",
-		OwnerUserID:      ownerUserID,
+		Name:              name,
+		AccountType:       "oauth",
+		AccessToken:       encAccess,
+		RefreshToken:      encRefresh,
+		RefreshTokenHash:  hash,
+		ExpiresAt:         expiresAt,
+		Status:            "active",
+		SubscriptionLevel: subscriptionLevel,
+		OwnerUserID:       ownerUserID,
 	}
 	if err := h.db.Create(&account).Error; err != nil {
 		return nil, false, fmt.Errorf("create: %w", err)
@@ -92,10 +104,24 @@ func (h *AccountsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 type credentialsJSON struct {
 	ClaudeAiOauth struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresAt    int64  `json:"expiresAt"` // milliseconds
+		AccessToken      string `json:"accessToken"`
+		RefreshToken     string `json:"refreshToken"`
+		ExpiresAt        int64  `json:"expiresAt"` // milliseconds
+		SubscriptionType string `json:"subscriptionType"`
 	} `json:"claudeAiOauth"`
+}
+
+func normalizeSubscriptionLevel(raw string) (string, error) {
+	level := strings.ToLower(strings.TrimSpace(raw))
+	if len(level) > 64 {
+		return "", fmt.Errorf("subscription level is too long")
+	}
+	for _, c := range level {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return "", fmt.Errorf("invalid subscription level")
+		}
+	}
+	return level, nil
 }
 
 func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -163,7 +189,7 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		} else {
 			expiresAt = time.Now().Add(1 * time.Hour)
 		}
-		acc, updated, err := h.upsertOAuthAccount(req.Name, creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, nil)
+		acc, updated, err := h.upsertOAuthAccount(req.Name, creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, creds.ClaudeAiOauth.SubscriptionType, nil)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("failed to create account: "+err.Error()))
 			return
@@ -217,10 +243,11 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         string  `json:"name"`
-		PoolIDs      *[]uint `json:"pool_ids"`
-		OwnerUserID  *uint   `json:"owner_user_id"`
-		MythosModels *string `json:"mythos_models"`
+		Name              string  `json:"name"`
+		PoolIDs           *[]uint `json:"pool_ids"`
+		OwnerUserID       *uint   `json:"owner_user_id"`
+		MythosModels      *string `json:"mythos_models"`
+		SubscriptionLevel *string `json:"subscription_level"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -238,6 +265,14 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updates["mythos_models"] = models
+	}
+	if req.SubscriptionLevel != nil {
+		level, err := normalizeSubscriptionLevel(*req.SubscriptionLevel)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
+			return
+		}
+		updates["subscription_level"] = level
 	}
 	if req.OwnerUserID != nil {
 		if *req.OwnerUserID == 0 {
@@ -545,7 +580,21 @@ func (h *AccountsHandler) Quota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	quota.FiveHourAvailable = quotaFiveHourAvailable(quota)
 	writeJSON(w, http.StatusOK, quota)
+}
+
+func quotaFiveHourAvailable(q database.AccountQuota) bool {
+	if q.FiveHourAvailable {
+		return true
+	}
+	var raw struct {
+		FiveHour json.RawMessage `json:"five_hour"`
+	}
+	if json.Unmarshal([]byte(q.RawJSON), &raw) != nil {
+		return false
+	}
+	return len(raw.FiveHour) > 0 && string(raw.FiveHour) != "null"
 }
 
 // GET /api/admin/quotas — returns all account quotas (for Quotas page)
@@ -556,23 +605,26 @@ func (h *AccountsHandler) AllQuotas(w http.ResponseWriter, r *http.Request) {
 
 	type quotaWithAccount struct {
 		database.AccountQuota
-		AccountName string           `json:"account_name"`
-		AccountType string           `json:"account_type"`
-		Status      string           `json:"status"`
-		Pools       []*database.Pool `json:"pools,omitempty"`
+		AccountName       string           `json:"account_name"`
+		AccountType       string           `json:"account_type"`
+		SubscriptionLevel string           `json:"subscription_level"`
+		Status            string           `json:"status"`
+		Pools             []*database.Pool `json:"pools,omitempty"`
 	}
 
 	result := make([]quotaWithAccount, 0, len(accounts))
 	for _, acc := range accounts {
 		entry := quotaWithAccount{
-			AccountName: acc.Name,
-			AccountType: acc.AccountType,
-			Status:      acc.Status,
-			Pools:       acc.Pools,
+			AccountName:       acc.Name,
+			AccountType:       acc.AccountType,
+			SubscriptionLevel: acc.SubscriptionLevel,
+			Status:            acc.Status,
+			Pools:             acc.Pools,
 		}
 		// Try to find quota data for this account
 		var q database.AccountQuota
 		if err := h.db.Where("account_id = ?", acc.ID).First(&q).Error; err == nil {
+			q.FiveHourAvailable = quotaFiveHourAvailable(q)
 			entry.AccountQuota = q
 		} else {
 			// No quota data yet — set account_id so frontend can identify it
@@ -627,7 +679,7 @@ func (h *AccountsHandler) ImportCredentials(w http.ResponseWriter, r *http.Reque
 		expiresAt = time.Now().Add(1 * time.Hour)
 	}
 
-	account, updated, err := h.upsertOAuthAccount("Imported "+time.Now().Format("2006-01-02 15:04"), creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, nil)
+	account, updated, err := h.upsertOAuthAccount("Imported "+time.Now().Format("2006-01-02 15:04"), creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, creds.ClaudeAiOauth.SubscriptionType, nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed: "+err.Error()))
 		return
@@ -674,7 +726,7 @@ func (h *AccountsHandler) PublicImport(w http.ResponseWriter, r *http.Request) {
 		expiresAt = time.Now().Add(1 * time.Hour)
 	}
 
-	account, updated, err := h.upsertOAuthAccount(user.Name+" (imported)", creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, &user.ID)
+	account, updated, err := h.upsertOAuthAccount(user.Name+" (imported)", creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, creds.ClaudeAiOauth.SubscriptionType, &user.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed: "+err.Error()))
 		return

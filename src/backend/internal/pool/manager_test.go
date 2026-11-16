@@ -56,9 +56,10 @@ func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []dat
 			reset = time.Now().Add(30 * time.Minute)
 		}
 		if err := db.Create(&database.AccountQuota{
-			AccountID:      account.ID,
-			FiveHourPct:    quota,
-			FiveHourResets: reset.Format(time.RFC3339),
+			AccountID:         account.ID,
+			FiveHourPct:       quota,
+			FiveHourAvailable: true,
+			FiveHourResets:    reset.Format(time.RFC3339),
 		}).Error; err != nil {
 			t.Fatalf("create account quota: %v", err)
 		}

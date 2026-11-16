@@ -104,7 +104,7 @@ export const accountsApi = {
   stats:       (id: number) => get<AccountStats>(`/admin/accounts/${id}/stats`),
   create:      (body: { name: string; pool_ids?: number[]; account_type?: string; credentials_json?: string; api_key?: string }) =>
                  post<Account>('/admin/accounts', body),
-  update:      (id: number, body: Partial<{ name: string; pool_ids: number[]; owner_user_id: number | null; mythos_models: string }>) =>
+  update:      (id: number, body: Partial<{ name: string; pool_ids: number[]; owner_user_id: number | null; mythos_models: string; subscription_level: string }>) =>
                  put<Account>(`/admin/accounts/${id}`, body),
   delete:      (id: number) => del(`/admin/accounts/${id}`),
   refresh:     (id: number) => post<{ expires_at: string }>(`/admin/accounts/${id}/refresh`),
@@ -250,6 +250,7 @@ export interface AccountQuotaData {
   id: number
   account_id: number
   five_hour_pct: number
+  five_hour_available: boolean
   five_hour_resets: string
   seven_day_pct: number
   seven_day_resets: string
@@ -267,6 +268,7 @@ export interface AccountQuotaData {
 export interface AccountQuotaWithInfo extends AccountQuotaData {
   account_name: string
   account_type: string
+  subscription_level: string
   status: string
   pools?: Pool[]
 }
@@ -303,6 +305,7 @@ export interface Account {
   id: number
   pools?: Pool[]
   account_type?: 'oauth' | 'apikey'
+  subscription_level: string
   name: string
   mythos_models: string
   status: 'active' | 'exhausted' | 'error' | 'disabled'

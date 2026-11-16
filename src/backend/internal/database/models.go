@@ -24,20 +24,21 @@ type Pool struct {
 }
 
 type ClaudeAccount struct {
-	ID               uint       `gorm:"primarykey" json:"id"`
-	Pools            []*Pool    `gorm:"many2many:account_pools;joinForeignKey:AccountID;joinReferences:PoolID" json:"pools,omitempty"`
-	Name             string     `gorm:"not null" json:"name"`
-	AccessToken      string     `gorm:"not null" json:"-"`
-	RefreshToken     string     `gorm:"not null" json:"-"`
-	RefreshTokenHash string     `gorm:"uniqueIndex" json:"-"` // SHA256 of plaintext refresh token for dedup
-	ExpiresAt        time.Time  `json:"expires_at"`
-	AccountType      string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
-	MythosModels     string     `json:"mythos_models"`                       // explicitly approved Mythos model IDs
-	Status           string     `gorm:"default:'active'" json:"status"`
-	LastError        string     `json:"last_error,omitempty"`
-	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
-	OwnerUserID      *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
-	CreatedAt        time.Time  `json:"created_at"`
+	ID                uint       `gorm:"primarykey" json:"id"`
+	Pools             []*Pool    `gorm:"many2many:account_pools;joinForeignKey:AccountID;joinReferences:PoolID" json:"pools,omitempty"`
+	Name              string     `gorm:"not null" json:"name"`
+	AccessToken       string     `gorm:"not null" json:"-"`
+	RefreshToken      string     `gorm:"not null" json:"-"`
+	RefreshTokenHash  string     `gorm:"uniqueIndex" json:"-"` // SHA256 of plaintext refresh token for dedup
+	ExpiresAt         time.Time  `json:"expires_at"`
+	AccountType       string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
+	SubscriptionLevel string     `json:"subscription_level"`
+	MythosModels      string     `json:"mythos_models"` // explicitly approved Mythos model IDs
+	Status            string     `gorm:"default:'active'" json:"status"`
+	LastError         string     `json:"last_error,omitempty"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
+	OwnerUserID       *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 type User struct {
@@ -218,22 +219,23 @@ type MCPServer struct {
 
 // AccountQuota stores cached Anthropic usage quotas fetched periodically.
 type AccountQuota struct {
-	ID             uint      `gorm:"primarykey" json:"id"`
-	AccountID      uint      `gorm:"uniqueIndex;not null" json:"account_id"`
-	FiveHourPct    int       `json:"five_hour_pct"`
-	FiveHourResets string    `json:"five_hour_resets"`
-	SevenDayPct    int       `json:"seven_day_pct"`
-	SevenDayResets string    `json:"seven_day_resets"`
-	OpusPct        *int      `json:"opus_pct,omitempty"`
-	OpusResets     string    `json:"opus_resets,omitempty"`
-	SonnetPct      *int      `json:"sonnet_pct,omitempty"`
-	SonnetResets   string    `json:"sonnet_resets,omitempty"`
-	ExtraEnabled   bool      `json:"extra_enabled"`
-	ExtraLimit     *float64  `json:"extra_limit,omitempty"`
-	ExtraUsed      *float64  `json:"extra_used,omitempty"`
-	RawJSON        string    `gorm:"type:text" json:"-"`
-	Error          string    `json:"error,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                uint      `gorm:"primarykey" json:"id"`
+	AccountID         uint      `gorm:"uniqueIndex;not null" json:"account_id"`
+	FiveHourPct       int       `json:"five_hour_pct"`
+	FiveHourAvailable bool      `json:"five_hour_available"`
+	FiveHourResets    string    `json:"five_hour_resets"`
+	SevenDayPct       int       `json:"seven_day_pct"`
+	SevenDayResets    string    `json:"seven_day_resets"`
+	OpusPct           *int      `json:"opus_pct,omitempty"`
+	OpusResets        string    `json:"opus_resets,omitempty"`
+	SonnetPct         *int      `json:"sonnet_pct,omitempty"`
+	SonnetResets      string    `json:"sonnet_resets,omitempty"`
+	ExtraEnabled      bool      `json:"extra_enabled"`
+	ExtraLimit        *float64  `json:"extra_limit,omitempty"`
+	ExtraUsed         *float64  `json:"extra_used,omitempty"`
+	RawJSON           string    `gorm:"type:text" json:"-"`
+	Error             string    `json:"error,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Setting stores runtime-editable configuration (DB-backed, no restart needed).

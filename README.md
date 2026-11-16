@@ -82,6 +82,7 @@ When all OAuth accounts are exhausted, it automatically falls back to Anthropic 
 - **Multi-Pool Architecture** — Accounts can belong to multiple pools simultaneously
 - **Auto Token Refresh** — OAuth tokens refreshed automatically with per-account mutex (no race conditions)
 - **Health Checks** — Periodic account health verification with automatic error marking
+- **Subscription Levels** — Show the imported plan tier, or set it for existing accounts in Accounts → Edit. The quota view labels Ultra accounts without a reported five-hour window as having no 5h limit.
 
 ### User Management
 - **Team-Based Quotas** — Organize users into teams with shared budgets
