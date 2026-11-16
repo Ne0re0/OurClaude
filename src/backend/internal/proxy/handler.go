@@ -369,6 +369,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body = rewriteModel(body, func(model string) string {
 		return h.aliases.get(h.db, model)
 	})
+	var modelRequest struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &modelRequest)
 
 	// Model allowlist check (after alias resolution)
 	if user.AllowedModels != "" {
@@ -385,6 +389,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	modelListRequest := r.Method == http.MethodGet && strings.TrimPrefix(r.URL.Path, "/proxy") == "/v1/models"
+	if modelListRequest {
+		// Let Go negotiate and transparently decompress upstream gzip before filtering.
+		r.Header.Del("Accept-Encoding")
+	}
 
 	// Prompt cache injection
 	if h.settings.GetBool("prompt_cache_inject") {
@@ -393,7 +402,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Response cache check
 	var cacheKey string
-	if h.settings.GetInt("response_cache_ttl") > 0 {
+	if !modelListRequest && h.settings.GetInt("response_cache_ttl") > 0 {
 		cacheKey = h.respCache.key(user.ID, body)
 		if cached := h.respCache.get(cacheKey); cached != nil {
 			for k, vs := range cached.headers {
@@ -413,10 +422,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	attemptedAccountIDs := make(map[uint]struct{}, maxRetries)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		account, err := h.pool.GetAccountForUserExcluding(poolIDs, attemptedAccountIDs)
+		account, err := h.pool.GetAccountForUserExcludingModel(poolIDs, attemptedAccountIDs, modelRequest.Model)
 		if err != nil {
 			if lastErr != nil {
 				break
+			}
+			if strings.HasPrefix(strings.ToLower(modelRequest.Model), "claude-mythos-") {
+				writeError(w, http.StatusServiceUnavailable, "no account assigned to "+modelRequest.Model+" in your pools")
+				return
 			}
 			writeError(w, http.StatusServiceUnavailable, "no available Claude accounts: "+err.Error())
 			return
@@ -449,6 +462,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			lastErr = fmt.Errorf("account %d: unauthorized", account.ID)
 			continue
 		}
+		if strings.HasPrefix(strings.ToLower(modelRequest.Model), "claude-mythos-") && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound) {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("account %d: model unavailable (%d)", account.ID, resp.StatusCode)
+			continue
+		}
+		if modelListRequest && resp.StatusCode == http.StatusOK {
+			filtered, err := h.filterModelList(resp.Body, poolIDs)
+			resp.Body.Close()
+			if err != nil {
+				log.Printf("proxy: failed to filter model list: %v", err)
+				writeError(w, http.StatusBadGateway, "failed to filter model list")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(filtered)
+			return
+		}
 
 		h.streamResponse(w, resp, user.ID, account.ID, r.URL.Path, start, messagesJSON, cacheKey, h.logStream, h.statsStream)
 		h.pool.UpdateLastUsed(account.ID)
@@ -460,6 +491,70 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		writeError(w, http.StatusServiceUnavailable, "all accounts exhausted, try again later")
 	}
+}
+
+func (h *Handler) filterModelList(body io.Reader, poolIDs []uint) ([]byte, error) {
+	var assignments []string
+	if err := h.db.Table("claude_accounts").
+		Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+		Where("account_pools.pool_id IN ? AND claude_accounts.status IN ?", poolIDs, []string{"active", "exhausted"}).
+		Pluck("COALESCE(claude_accounts.mythos_models, '')", &assignments).Error; err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]bool)
+	for _, assigned := range assignments {
+		for _, model := range strings.Split(assigned, ",") {
+			allowed[strings.ToLower(strings.TrimSpace(model))] = true
+		}
+	}
+	var list map[string]json.RawMessage
+	data, err := io.ReadAll(io.LimitReader(body, 4*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, err
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(list["data"], &entries); err != nil {
+		return nil, err
+	}
+	filtered := make([]json.RawMessage, 0, len(entries))
+	for _, entry := range entries {
+		var model struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(entry, &model) != nil {
+			continue
+		}
+		id := strings.ToLower(model.ID)
+		if (id == "claude-mythos-5-1" || id == "claude-mythos-5-2") && !allowed[id] {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	list["data"], _ = json.Marshal(filtered)
+	if len(filtered) == 0 {
+		if _, ok := list["first_id"]; ok {
+			list["first_id"] = []byte("null")
+		}
+		if _, ok := list["last_id"]; ok {
+			list["last_id"] = []byte("null")
+		}
+	} else {
+		var first, last struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(filtered[0], &first)
+		_ = json.Unmarshal(filtered[len(filtered)-1], &last)
+		if _, ok := list["first_id"]; ok {
+			list["first_id"], _ = json.Marshal(first.ID)
+		}
+		if _, ok := list["last_id"]; ok {
+			list["last_id"], _ = json.Marshal(last.ID)
+		}
+	}
+	return json.Marshal(list)
 }
 
 func (h *Handler) authenticate(r *http.Request) (*database.User, error) {

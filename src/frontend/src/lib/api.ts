@@ -104,7 +104,7 @@ export const accountsApi = {
   stats:       (id: number) => get<AccountStats>(`/admin/accounts/${id}/stats`),
   create:      (body: { name: string; pool_ids?: number[]; account_type?: string; credentials_json?: string; api_key?: string }) =>
                  post<Account>('/admin/accounts', body),
-  update:      (id: number, body: Partial<{ name: string; pool_ids: number[]; owner_user_id: number | null }>) =>
+  update:      (id: number, body: Partial<{ name: string; pool_ids: number[]; owner_user_id: number | null; mythos_models: string }>) =>
                  put<Account>(`/admin/accounts/${id}`, body),
   delete:      (id: number) => del(`/admin/accounts/${id}`),
   refresh:     (id: number) => post<{ expires_at: string }>(`/admin/accounts/${id}/refresh`),
@@ -304,6 +304,7 @@ export interface Account {
   pools?: Pool[]
   account_type?: 'oauth' | 'apikey'
   name: string
+  mythos_models: string
   status: 'active' | 'exhausted' | 'error' | 'disabled'
   last_error?: string
   expires_at: string

@@ -188,6 +188,16 @@ func main() {
 		cmdUninstall()
 	case "mcp-sync":
 		cmdMCPSync()
+	case "mythos":
+		if len(args) < 2 || (args[1] != "5.1" && args[1] != "5.2") {
+			fmt.Fprintln(os.Stderr, "usage: ourclaude mythos <5.1|5.2> [claude-args...]")
+			os.Exit(1)
+		}
+		model := "claude-mythos-5-1"
+		if args[1] == "5.2" {
+			model = "claude-mythos-5-2"
+		}
+		runClaude(append([]string{"--model", model}, args[2:]...))
 	case "help", "--help", "-h":
 		printHelp()
 	default:
@@ -889,9 +899,10 @@ func buildEnv(cfg *Config) []string {
 	// any local claude.ai OAuth session, which avoids the "Auth conflict" warning.
 	// Also clear ANTHROPIC_API_KEY so only one auth source is active.
 	overrides := map[string]string{
-		"ANTHROPIC_BASE_URL":   cfg.ServerURL + "/proxy",
-		"ANTHROPIC_AUTH_TOKEN": cfg.Token,
-		"ANTHROPIC_API_KEY":    "",
+		"ANTHROPIC_BASE_URL":                         cfg.ServerURL + "/proxy",
+		"ANTHROPIC_AUTH_TOKEN":                       cfg.Token,
+		"ANTHROPIC_API_KEY":                          "",
+		"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 	}
 	if host != "" {
 		overrides["NO_PROXY"] = host
@@ -1032,18 +1043,18 @@ const (
 type dashMe struct {
 	Name  string `json:"name"`
 	Quota struct {
-		DailyUsed    int64   `json:"daily_used"`
-		DailyLimit   int64   `json:"daily_limit"`
-		MonthlyUsed  int64   `json:"monthly_used"`
-		MonthlyLimit int64   `json:"monthly_limit"`
+		DailyUsed     int64   `json:"daily_used"`
+		DailyLimit    int64   `json:"daily_limit"`
+		MonthlyUsed   int64   `json:"monthly_used"`
+		MonthlyLimit  int64   `json:"monthly_limit"`
 		MonthlyBudget float64 `json:"monthly_budget"`
 	} `json:"quota"`
 }
 
 type dashPoolStatus struct {
 	Pools []struct {
-		ID   uint   `json:"id"`
-		Name string `json:"name"`
+		ID       uint   `json:"id"`
+		Name     string `json:"name"`
 		Accounts struct {
 			Active    int64 `json:"active"`
 			Exhausted int64 `json:"exhausted"`
@@ -1301,6 +1312,7 @@ Usage:
   ourclaude update                       Download and replace with latest binary
   ourclaude uninstall                    Remove ourclaude binary and config
   ourclaude mcp-sync                     Sync MCP servers from proxy to local settings
+  ourclaude mythos <5.1|5.2> [args...]   Run Claude with the selected Mythos model
   ourclaude [claude-args...]             Run claude through the proxy
 
 Examples:

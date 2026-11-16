@@ -168,6 +168,12 @@ sudo mv ourclaude /usr/local/bin/
 ourclaude login https://your-server sk-proxy-xxxxx
 ```
 
+### Mythos models
+
+In **Accounts → Edit**, enable Mythos 5.1 or 5.2 only for accounts confirmed to have access. Mythos requests are routed only to accounts enabled for the requested version. A request fails with a clear error when no eligible account is linked to the user's pools.
+
+Run `ourclaude update` after the server is upgraded, then start a new session. On recent Claude Code versions, `ourclaude` enables gateway model discovery so `/model` lists each Mythos version available through the user's pools. You can also launch a version directly with `ourclaude mythos 5.1` or `ourclaude mythos 5.2`. The model catalog alone does not prove an account can generate with a model; verify access before enabling it.
+
 ### RTK (Recommended)
 
 [RTK (Rust Token Killer)](https://github.com/rtk-ai/rtk) is a token optimizer that reduces Claude Code token usage by **60-90%** by filtering unnecessary context from CLI tool outputs. It's **included by default** in the automatic install script.

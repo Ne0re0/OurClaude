@@ -104,7 +104,7 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		PoolIDs         []uint `json:"pool_ids"`
 		AccountType     string `json:"account_type"`     // "oauth" (default) or "apikey"
 		CredentialsJSON string `json:"credentials_json"` // for oauth
-		APIKey          string `json:"api_key"`           // for apikey
+		APIKey          string `json:"api_key"`          // for apikey
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -217,9 +217,10 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string  `json:"name"`
-		PoolIDs     *[]uint `json:"pool_ids"`
-		OwnerUserID *uint   `json:"owner_user_id"`
+		Name         string  `json:"name"`
+		PoolIDs      *[]uint `json:"pool_ids"`
+		OwnerUserID  *uint   `json:"owner_user_id"`
+		MythosModels *string `json:"mythos_models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -229,6 +230,14 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	updates := map[string]interface{}{}
 	if req.Name != "" {
 		updates["name"] = req.Name
+	}
+	if req.MythosModels != nil {
+		models, err := normalizeMythosModels(*req.MythosModels)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
+			return
+		}
+		updates["mythos_models"] = models
 	}
 	if req.OwnerUserID != nil {
 		if *req.OwnerUserID == 0 {
@@ -260,6 +269,25 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	h.db.Preload("Pools").First(&account, id)
 	logAudit(h.db, r, "update_account", fmt.Sprintf("account:%s", account.Name), "")
 	writeJSON(w, http.StatusOK, account)
+}
+
+func normalizeMythosModels(raw string) (string, error) {
+	seen := map[string]bool{}
+	var models []string
+	for _, part := range strings.Split(raw, ",") {
+		model := strings.ToLower(strings.TrimSpace(part))
+		if model == "" {
+			continue
+		}
+		if model != "claude-mythos-5-1" && model != "claude-mythos-5-2" {
+			return "", fmt.Errorf("unsupported Mythos model: %s", model)
+		}
+		if !seen[model] {
+			models = append(models, model)
+			seen[model] = true
+		}
+	}
+	return strings.Join(models, ","), nil
 }
 
 func (h *AccountsHandler) Delete(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,11 +136,16 @@ func (m *Manager) GetAccountForUser(poolIDs []uint) (*database.ClaudeAccount, er
 // GetAccountForUserExcluding selects the best account while skipping accounts
 // already attempted for the current proxy request.
 func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
+	return m.GetAccountForUserExcludingModel(poolIDs, excluded, "")
+}
+
+// GetAccountForUserExcludingModel restricts Mythos requests to accounts explicitly assigned that model.
+func (m *Manager) GetAccountForUserExcludingModel(poolIDs []uint, excluded map[uint]struct{}, model string) (*database.ClaudeAccount, error) {
 	if len(poolIDs) == 0 {
 		return nil, ErrNoActiveAccounts
 	}
 	if len(poolIDs) == 1 {
-		return m.GetAccountForPoolExcluding(poolIDs[0], excluded)
+		return m.GetAccountForPoolExcludingModel(poolIDs[0], excluded, model)
 	}
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
@@ -162,7 +168,7 @@ func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]s
 
 	sort.Slice(pools, func(i, j int) bool { return pools[i].usage < pools[j].usage })
 	for _, candidate := range pools {
-		account, err := m.GetAccountForPoolExcluding(candidate.id, excluded)
+		account, err := m.GetAccountForPoolExcludingModel(candidate.id, excluded, model)
 		if err == nil {
 			return account, nil
 		}
@@ -183,6 +189,10 @@ func (m *Manager) GetAccountForPool(poolID uint) (*database.ClaudeAccount, error
 // GetAccountForPoolExcluding is GetAccountForPool with a per-request exclusion
 // set, used to ensure a retry actually moves to another account.
 func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
+	return m.GetAccountForPoolExcludingModel(poolID, excluded, "")
+}
+
+func (m *Manager) GetAccountForPoolExcludingModel(poolID uint, excluded map[uint]struct{}, model string) (*database.ClaudeAccount, error) {
 	var accounts []database.ClaudeAccount
 	if err := m.db.Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
 		Where("account_pools.pool_id = ? AND claude_accounts.status != ?", poolID, "error").
@@ -190,6 +200,7 @@ func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]stru
 		return nil, err
 	}
 	accounts = filterExcluded(accounts, excluded)
+	accounts = filterForModel(accounts, model)
 
 	// 1. Try active OAuth accounts first (scored pick: drain mode / reset-aware)
 	oauthActive := filterByTypeAndStatus(accounts, "oauth", "active")
@@ -215,6 +226,7 @@ func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]stru
 		Where("account_pools.pool_id = ? AND claude_accounts.status = ? AND claude_accounts.account_type = ?", poolID, "error", "oauth").
 		Find(&errorAccounts)
 	errorAccounts = filterExcluded(errorAccounts, excluded)
+	errorAccounts = filterForModel(errorAccounts, model)
 	if len(errorAccounts) > 0 {
 		return m.pickAndValidateSoft(poolID, errorAccounts)
 	}
@@ -416,6 +428,26 @@ func filterExcluded(accounts []database.ClaudeAccount, excluded map[uint]struct{
 	for _, account := range accounts {
 		if _, skip := excluded[account.ID]; !skip {
 			result = append(result, account)
+		}
+	}
+	return result
+}
+
+func filterForModel(accounts []database.ClaudeAccount, model string) []database.ClaudeAccount {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.IndexByte(model, '['); idx >= 0 {
+		model = model[:idx]
+	}
+	if model != "claude-mythos-5-1" && model != "claude-mythos-5-2" {
+		return accounts
+	}
+	result := make([]database.ClaudeAccount, 0, len(accounts))
+	for _, account := range accounts {
+		for _, enabled := range strings.Split(account.MythosModels, ",") {
+			if strings.EqualFold(strings.TrimSpace(enabled), model) {
+				result = append(result, account)
+				break
+			}
 		}
 	}
 	return result

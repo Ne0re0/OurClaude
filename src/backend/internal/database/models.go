@@ -24,19 +24,20 @@ type Pool struct {
 }
 
 type ClaudeAccount struct {
-	ID           uint       `gorm:"primarykey" json:"id"`
-	Pools        []*Pool    `gorm:"many2many:account_pools;joinForeignKey:AccountID;joinReferences:PoolID" json:"pools,omitempty"`
-	Name         string     `gorm:"not null" json:"name"`
-	AccessToken  string     `gorm:"not null" json:"-"`
+	ID               uint       `gorm:"primarykey" json:"id"`
+	Pools            []*Pool    `gorm:"many2many:account_pools;joinForeignKey:AccountID;joinReferences:PoolID" json:"pools,omitempty"`
+	Name             string     `gorm:"not null" json:"name"`
+	AccessToken      string     `gorm:"not null" json:"-"`
 	RefreshToken     string     `gorm:"not null" json:"-"`
 	RefreshTokenHash string     `gorm:"uniqueIndex" json:"-"` // SHA256 of plaintext refresh token for dedup
 	ExpiresAt        time.Time  `json:"expires_at"`
-	AccountType  string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
-	Status       string     `gorm:"default:'active'" json:"status"`
-	LastError    string     `json:"last_error,omitempty"`
-	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
-	OwnerUserID  *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
-	CreatedAt    time.Time  `json:"created_at"`
+	AccountType      string     `gorm:"default:'oauth'" json:"account_type"` // "oauth" or "apikey"
+	MythosModels     string     `json:"mythos_models"`                       // explicitly approved Mythos model IDs
+	Status           string     `gorm:"default:'active'" json:"status"`
+	LastError        string     `json:"last_error,omitempty"`
+	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
+	OwnerUserID      *uint      `gorm:"index" json:"owner_user_id,omitempty"` // proxy user who owns this account
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 type User struct {
@@ -46,12 +47,12 @@ type User struct {
 	Pools             []*Pool    `gorm:"many2many:user_pools;joinForeignKey:UserID;joinReferences:PoolID" json:"pools,omitempty"`
 	Active            bool       `gorm:"default:true" json:"active"`
 	TokenExpiresAt    *time.Time `json:"token_expires_at,omitempty"`
-	DailyTokenQuota   int        `gorm:"default:0" json:"daily_token_quota"`    // 0 = unlimited
-	MonthlyTokenQuota int        `gorm:"default:0" json:"monthly_token_quota"`  // 0 = unlimited
-	MonthlyBudgetUSD  float64    `gorm:"default:0" json:"monthly_budget_usd"`   // 0 = unlimited
-	AllowedModels     string     `json:"allowed_models"`   // comma-separated, empty = all
-	IPWhitelist       string     `json:"ip_whitelist"`     // comma-separated CIDRs, empty = all
-	ExtraHeaders      string     `json:"extra_headers"`    // JSON map injected into upstream requests
+	DailyTokenQuota   int        `gorm:"default:0" json:"daily_token_quota"`   // 0 = unlimited
+	MonthlyTokenQuota int        `gorm:"default:0" json:"monthly_token_quota"` // 0 = unlimited
+	MonthlyBudgetUSD  float64    `gorm:"default:0" json:"monthly_budget_usd"`  // 0 = unlimited
+	AllowedModels     string     `json:"allowed_models"`                       // comma-separated, empty = all
+	IPWhitelist       string     `json:"ip_whitelist"`                         // comma-separated CIDRs, empty = all
+	ExtraHeaders      string     `json:"extra_headers"`                        // JSON map injected into upstream requests
 	TeamID            *uint      `gorm:"index" json:"team_id,omitempty"`
 	Team              *Team      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -78,7 +79,7 @@ type WebhookConfig struct {
 	ID        uint      `gorm:"primarykey" json:"id"`
 	URL       string    `gorm:"not null" json:"url"`
 	Events    string    `gorm:"not null" json:"events"` // comma-separated: account.exhausted,account.error
-	Secret    string    `json:"secret,omitempty"`        // HMAC secret, only shown on create
+	Secret    string    `json:"secret,omitempty"`       // HMAC secret, only shown on create
 	Active    bool      `gorm:"default:true" json:"active"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -105,15 +106,15 @@ type InviteToken struct {
 }
 
 type AdminSession struct {
-	ID          uint      `gorm:"primarykey" json:"id"`
-	AdminID     uint      `gorm:"not null;index" json:"admin_id"`
-	Admin       *Admin    `gorm:"foreignKey:AdminID" json:"admin,omitempty"`
-	TokenHash   string    `gorm:"uniqueIndex;not null" json:"-"`
-	IP          string    `json:"ip"`
-	UserAgent   string    `json:"user_agent"`
-	LastUsedAt  time.Time `json:"last_used_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         uint      `gorm:"primarykey" json:"id"`
+	AdminID    uint      `gorm:"not null;index" json:"admin_id"`
+	Admin      *Admin    `gorm:"foreignKey:AdminID" json:"admin,omitempty"`
+	TokenHash  string    `gorm:"uniqueIndex;not null" json:"-"`
+	IP         string    `json:"ip"`
+	UserAgent  string    `json:"user_agent"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type ModelAlias struct {
@@ -127,7 +128,7 @@ type DownloadLink struct {
 	ID           uint       `gorm:"primarykey" json:"id"`
 	Token        string     `gorm:"uniqueIndex;not null" json:"token"`
 	Label        string     `json:"label"`
-	Platform     string     `gorm:"not null" json:"platform"` // linux-amd64, linux-arm64, darwin-amd64, darwin-arm64, windows-amd64
+	Platform     string     `gorm:"not null" json:"platform"`       // linux-amd64, linux-arm64, darwin-amd64, darwin-arm64, windows-amd64
 	MaxDownloads int        `gorm:"default:1" json:"max_downloads"` // 0 = unlimited
 	Downloads    int        `gorm:"default:0" json:"downloads"`
 	Revoked      bool       `gorm:"default:false" json:"revoked"`

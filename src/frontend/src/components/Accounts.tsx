@@ -292,6 +292,7 @@ function AddAccountModal({ pools, defaultType, onClose }: { pools: Pool[]; defau
 
 function EditAccountModal({ account, pools, onClose }: { account: Account; pools: Pool[]; onClose: () => void }) {
   const [name, setName] = useState(account.name)
+  const [mythosModels, setMythosModels] = useState<Set<string>>(new Set((account.mythos_models ?? '').split(',').filter(Boolean)))
   const [selectedPools, setSelectedPools] = useState<Set<number>>(new Set((account.pools ?? []).map(p => p.id)))
   const [error, setError] = useState('')
   const qc = useQueryClient()
@@ -300,6 +301,7 @@ function EditAccountModal({ account, pools, onClose }: { account: Account; pools
     mutationFn: () => accountsApi.update(account.id, {
       name,
       pool_ids: [...selectedPools],
+      mythos_models: [...mythosModels].join(','),
     }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['accounts'] }); onClose() },
     onError: (e: Error) => setError(e.message),
@@ -323,6 +325,20 @@ function EditAccountModal({ account, pools, onClose }: { account: Account; pools
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Pools</label>
             <PoolCheckboxes pools={pools} selected={selectedPools} onChange={setSelectedPools} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Mythos access</label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Enable only models this account can use. Mythos requests route only to enabled accounts.</p>
+            {(['claude-mythos-5-1', 'claude-mythos-5-2'] as const).map(model => (
+              <label key={model} className="flex items-center gap-2 text-sm dark:text-gray-200 mb-1">
+                <input type="checkbox" checked={mythosModels.has(model)} onChange={() => {
+                  const next = new Set(mythosModels)
+                  if (next.has(model)) next.delete(model); else next.add(model)
+                  setMythosModels(next)
+                }} />
+                {model === 'claude-mythos-5-1' ? 'Mythos 5.1' : 'Mythos 5.2'}
+              </label>
+            ))}
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
