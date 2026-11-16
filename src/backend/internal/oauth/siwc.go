@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,13 +28,39 @@ const (
 )
 
 type SIWCTokenResponse struct {
-	AccessToken       string `json:"access_token"`
-	RefreshToken      string `json:"refresh_token"`
-	IDToken           string `json:"id_token"`
-	TokenType         string `json:"token_type"`
-	ExpiresIn         int    `json:"expires_in"`
-	Scope             string `json:"scope"`
-	EarliestRefreshAt string `json:"earliest_refresh_at,omitempty"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	Scope        string `json:"scope"`
+	// OpenAI returns earliest_refresh_at as Unix seconds (a JSON number), and
+	// its reference SDK also accepts a string. Decoding it into a fixed Go type
+	// made every successful code exchange fail, so it is kept verbatim.
+	EarliestRefreshAt json.RawMessage `json:"earliest_refresh_at,omitempty"`
+}
+
+var issuedClientIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`)
+
+// ValidIssuedClientID reports whether id can be the client ID issued by a
+// dynamic registration. Issued IDs are typically "oaiapp_...", but OpenAI does
+// not guarantee the prefix, so, like OpenAI's reference SDK, only the
+// character set is checked and the registration placeholder is rejected.
+func ValidIssuedClientID(id string) bool {
+	return id != SIWCDynamicClientID && issuedClientIDPattern.MatchString(id)
+}
+
+// GrantedScopes returns the scopes OpenAI granted. OpenAI documents the token
+// response's scope field as the source of truth; the access-token claim is
+// only a fallback because access tokens are meant to be treated as opaque.
+func (t SIWCTokenResponse) GrantedScopes() []string {
+	if scopes := strings.Fields(t.Scope); len(scopes) > 0 {
+		return scopes
+	}
+	if claim, ok := jwtClaims(t.AccessToken)["scope"].(string); ok {
+		return strings.Fields(claim)
+	}
+	return nil
 }
 
 type SIWCIdentity struct {
@@ -57,11 +84,13 @@ type jwk struct {
 	E   string `json:"e"`
 }
 
-// VerifySIWCCredentials verifies both tokens OpenAI returns for the
-// open-source Sign in with ChatGPT flow. expectedNonce is required by the
-// local CLI; the receiving server passes an empty nonce after the CLI has
-// already checked it, while still re-verifying signature, issuer, audience,
-// expiry, client binding, and granted scope.
+// VerifySIWCCredentials validates the credential set OpenAI returns for the
+// open-source Sign in with ChatGPT flow, following OpenAI's documented checks:
+// the ID token's signature, issuer, audience (the issued client ID), expiry,
+// and nonce, plus the granted chatgpt.tokens.use.direct scope. The access
+// token is opaque to clients and is not verified as a JWT. expectedNonce is
+// required by the local CLI; the receiving server passes an empty nonce after
+// the CLI has already checked it.
 func VerifySIWCCredentials(ctx context.Context, client *http.Client, tokens SIWCTokenResponse, clientID, expectedNonce string) (SIWCIdentity, error) {
 	return verifySIWCCredentials(ctx, client, tokens, clientID, expectedNonce, SIWCJWKSURL)
 }
@@ -70,7 +99,7 @@ func verifySIWCCredentials(ctx context.Context, client *http.Client, tokens SIWC
 	if tokens.IDToken == "" || tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		return SIWCIdentity{}, fmt.Errorf("OpenAI token response is incomplete")
 	}
-	if !strings.HasPrefix(clientID, "oaiapp_") {
+	if !ValidIssuedClientID(clientID) {
 		return SIWCIdentity{}, fmt.Errorf("OpenAI did not issue a valid client ID")
 	}
 
@@ -93,20 +122,16 @@ func verifySIWCCredentials(ctx context.Context, client *http.Client, tokens SIWC
 	if subject == "" {
 		return SIWCIdentity{}, fmt.Errorf("OpenAI ID token did not contain a subject")
 	}
-
-	accessClaims, err := verifyJWT(tokens.AccessToken, SIWCResource, keys)
-	if err != nil {
-		return SIWCIdentity{}, fmt.Errorf("invalid OpenAI access token: %w", err)
-	}
-	boundClientID, _ := accessClaims["client_id"].(string)
-	if boundClientID != clientID {
-		return SIWCIdentity{}, fmt.Errorf("OpenAI access token is bound to a different client")
+	// An authorized party, when present, must be this client; with several
+	// audiences it is required (OIDC Core 3.1.3.7).
+	azp, hasAZP := idClaims["azp"].(string)
+	if (hasAZP && azp != clientID) || (!hasAZP && audienceCount(idClaims) > 1) {
+		return SIWCIdentity{}, fmt.Errorf("OpenAI ID token was issued to a different client")
 	}
 
-	scopeText, _ := accessClaims["scope"].(string)
-	scopes := strings.Fields(scopeText)
-	if !containsScope(scopes, SIWCRequiredScope) || !containsScope(scopes, "resource.invoke") || !containsScope(scopes, "offline_access") {
-		return SIWCIdentity{}, fmt.Errorf("ChatGPT plan usage permission was not granted")
+	scopes := tokens.GrantedScopes()
+	if !containsScope(scopes, SIWCRequiredScope) {
+		return SIWCIdentity{}, fmt.Errorf("ChatGPT plan usage was not granted (missing %s); sign in again and allow ChatGPT plan usage", SIWCRequiredScope)
 	}
 
 	expiry := TokenExpiresAt(tokens.AccessToken)
@@ -205,6 +230,14 @@ func rsaKey(modulus, exponent string) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("invalid RSA exponent")
 	}
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+}
+
+func audienceCount(claims jwt.MapClaims) int {
+	audience, err := claims.GetAudience()
+	if err != nil {
+		return 0
+	}
+	return len(audience)
 }
 
 func containsScope(scopes []string, wanted string) bool {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -147,6 +148,7 @@ func (h *AccountsHandler) CompleteOAuthConnect(w http.ResponseWriter, r *http.Re
 	verifyClient := &http.Client{Timeout: 15 * time.Second}
 	identity, err := oauth.VerifySIWCCredentials(r.Context(), verifyClient, req.Tokens, req.ClientID, "")
 	if err != nil {
+		log.Printf("oauth connect: session %d: credentials rejected: %v", session.ID, err)
 		writeJSON(w, http.StatusBadRequest, errResp("ChatGPT credentials were rejected: "+err.Error()))
 		return
 	}
@@ -250,9 +252,11 @@ func (h *AccountsHandler) CompleteOAuthConnect(w http.ResponseWriter, r *http.Re
 		return tx.Model(&database.OAuthConnectSession{}).Where("id = ?", session.ID).Update("account_id", account.ID).Error
 	})
 	if err != nil {
+		log.Printf("oauth connect: session %d: could not save account: %v", session.ID, err)
 		writeJSON(w, http.StatusConflict, errResp(err.Error()))
 		return
 	}
+	log.Printf("oauth connect: session %d: connected account %d", session.ID, accountID)
 
 	h.db.Create(&database.AuditLog{
 		AdminID:       session.AdminID,

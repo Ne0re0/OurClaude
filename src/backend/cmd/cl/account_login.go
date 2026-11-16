@@ -120,30 +120,7 @@ func cmdAccountLogin(args []string) {
 
 	callbackCh := make(chan oauthCallback, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
-		returnedState := r.URL.Query().Get("state")
-		if subtle.ConstantTimeCompare([]byte(returnedState), []byte(state)) != 1 {
-			http.Error(w, "Sign-in could not be verified. Return to the terminal and try again.", http.StatusBadRequest)
-			sendOAuthCallback(callbackCh, oauthCallback{Err: errors.New("OAuth state did not match")})
-			return
-		}
-		if oauthErr := r.URL.Query().Get("error"); oauthErr != "" {
-			description := r.URL.Query().Get("error_description")
-			http.Error(w, "ChatGPT sign-in was cancelled. You can close this tab.", http.StatusBadRequest)
-			sendOAuthCallback(callbackCh, oauthCallback{Err: fmt.Errorf("%s: %s", oauthErr, description)})
-			return
-		}
-		code := r.URL.Query().Get("code")
-		clientID := r.URL.Query().Get("client_id")
-		if code == "" || !strings.HasPrefix(clientID, "oaiapp_") {
-			http.Error(w, "ChatGPT sign-in returned an incomplete response.", http.StatusBadRequest)
-			sendOAuthCallback(callbackCh, oauthCallback{Err: errors.New("OAuth callback was incomplete")})
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><body style="font-family:system-ui;padding:3rem"><h1>ChatGPT connected</h1><p>You can close this tab and return to the terminal.</p></body></html>`)
-		sendOAuthCallback(callbackCh, oauthCallback{Code: code, ClientID: clientID})
-	})
+	mux.Handle("/auth/callback", oauthCallbackHandler(state, callbackCh))
 	callbackServer := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if serveErr := callbackServer.Serve(listener); serveErr != nil && serveErr != http.ErrServerClosed {
@@ -215,7 +192,8 @@ func cmdAccountLogin(args []string) {
 	}
 	var tokens internaloauth.SIWCTokenResponse
 	if err := json.Unmarshal(tokenBody, &tokens); err != nil {
-		fmt.Fprintln(os.Stderr, "error: OpenAI returned an invalid token response")
+		// Decoder errors name the field and JSON type, never token values.
+		fmt.Fprintf(os.Stderr, "error: OpenAI returned an invalid token response: %v\n", err)
 		os.Exit(1)
 	}
 	identity, err := internaloauth.VerifySIWCCredentials(context.Background(), client, tokens, callback.ClientID, nonce)
@@ -292,6 +270,57 @@ func randomOAuthValue(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+const callbackPageTemplate = `<!doctype html><html lang="en"><meta charset="utf-8"><title>%[1]s</title><body style="font-family:system-ui;max-width:32rem;margin:15vh auto;padding:1.5rem"><h1>%[1]s</h1><p>%[2]s</p></body></html>`
+
+// oauthCallbackHandler handles OpenAI's loopback redirect. Only a request
+// carrying this attempt's state can settle the sign-in, so stale tabs or
+// unrelated local requests cannot abort a pending login. The page shown only
+// sends the user back to the terminal: token exchange, verification, and the
+// transfer to OurCodex happen afterwards and report their result there.
+func oauthCallbackHandler(state string, results chan<- oauthCallback) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		query := r.URL.Query()
+		if len(query["state"]) != 1 || subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "This sign-in response does not belong to the pending ourcodex login. Use the browser tab ourcodex opened.", http.StatusBadRequest)
+			return
+		}
+		page := func(status int, title, message string) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(status)
+			fmt.Fprintf(w, callbackPageTemplate, title, message)
+		}
+		if oauthErr := query.Get("error"); oauthErr != "" {
+			page(http.StatusBadRequest, "ChatGPT sign-in was not completed", "You can close this tab. The terminal shows the reason.")
+			err := fmt.Errorf("OpenAI returned %q", oauthErr)
+			if description := query.Get("error_description"); description != "" {
+				err = fmt.Errorf("OpenAI returned %q: %s", oauthErr, description)
+			}
+			sendOAuthCallback(results, oauthCallback{Err: err})
+			return
+		}
+		code := query.Get("code")
+		clientID := query.Get("client_id")
+		if code == "" || len(query["code"]) != 1 || len(query["client_id"]) > 1 {
+			page(http.StatusBadRequest, "ChatGPT sign-in was incomplete", "Return to the terminal and run the command again.")
+			sendOAuthCallback(results, oauthCallback{Err: errors.New("OAuth callback did not contain exactly one authorization code")})
+			return
+		}
+		if !internaloauth.ValidIssuedClientID(clientID) {
+			page(http.StatusBadRequest, "ChatGPT sign-in was incomplete", "Return to the terminal and run the command again.")
+			sendOAuthCallback(results, oauthCallback{Err: fmt.Errorf("OpenAI did not return an issued client ID (got %q), so registration is incomplete", clientID)})
+			return
+		}
+		page(http.StatusOK, "Return to the terminal", "ourcodex is finishing the connection to OurCodex. You can close this tab.")
+		sendOAuthCallback(results, oauthCallback{Code: code, ClientID: clientID})
+	}
 }
 
 func sendOAuthCallback(ch chan<- oauthCallback, result oauthCallback) {

@@ -146,7 +146,7 @@ func (r *Refresher) RefreshToken(db *gorm.DB, account *database.CodexAccount) er
 
 func (r *Refresher) refreshSIWC(db *gorm.DB, account *database.CodexAccount) error {
 	clientID := strings.TrimSpace(account.OAuthClientID)
-	if !strings.HasPrefix(clientID, "oaiapp_") {
+	if !ValidIssuedClientID(clientID) {
 		return fmt.Errorf("SIWC account has no issued OAuth client ID")
 	}
 	form := url.Values{
@@ -177,7 +177,7 @@ func (r *Refresher) refreshSIWC(db *gorm.DB, account *database.CodexAccount) err
 
 	var result SIWCTokenResponse
 	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return err
+		return fmt.Errorf("decode SIWC refresh response: %w", err)
 	}
 	if result.AccessToken == "" || result.RefreshToken == "" {
 		return fmt.Errorf("SIWC refresh response did not contain replacement credentials")
