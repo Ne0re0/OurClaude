@@ -520,6 +520,7 @@ func (h *Handler) filterModelList(body io.Reader, poolIDs []uint) ([]byte, error
 		return nil, err
 	}
 	filtered := make([]json.RawMessage, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
 		var model struct {
 			ID string `json:"id"`
@@ -531,6 +532,22 @@ func (h *Handler) filterModelList(body io.Reader, poolIDs []uint) ([]byte, error
 		if (id == "claude-mythos-5-1" || id == "claude-mythos-5-2") && !allowed[id] {
 			continue
 		}
+		seen[id] = true
+		filtered = append(filtered, entry)
+	}
+	// Some upstream catalogs omit models that an account is explicitly assigned.
+	// Advertise those assignments so Claude Code can offer them in /model.
+	for _, model := range []struct{ id, name string }{
+		{"claude-mythos-5-2", "Claude Mythos 5.2"},
+		{"claude-mythos-5-1", "Claude Mythos 5.1"},
+	} {
+		if !allowed[model.id] || seen[model.id] {
+			continue
+		}
+		entry, _ := json.Marshal(map[string]string{
+			"id": model.id, "type": "model", "display_name": model.name,
+			"description": "Assigned to an account in your OurClaude pool",
+		})
 		filtered = append(filtered, entry)
 	}
 	list["data"], _ = json.Marshal(filtered)

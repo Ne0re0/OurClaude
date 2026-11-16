@@ -49,3 +49,33 @@ func TestFilterModelListUsesAccountsInUsersPools(t *testing.T) {
 		t.Fatalf("unexpected model list: %s", output)
 	}
 }
+
+func TestFilterModelListAddsAssignedMythosMissingUpstream(t *testing.T) {
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "models.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := database.ClaudeAccount{Name: "assigned", AccessToken: "x", RefreshToken: "x", RefreshTokenHash: "assigned-hash", Status: "active", MythosModels: "claude-mythos-5-2"}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&database.AccountPool{AccountID: account.ID, PoolID: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{db: db}
+	output, err := h.filterModelList(strings.NewReader(`{"type":"list","data":[{"id":"claude-opus-5-5"}],"has_more":false}`), []uint{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Data) != 2 || result.Data[1].ID != "claude-mythos-5-2" {
+		t.Fatalf("unexpected model list: %s", output)
+	}
+}
