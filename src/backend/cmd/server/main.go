@@ -4,9 +4,9 @@ import (
 	"io/fs"
 	"log"
 
-	"claude-proxy/internal/config"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/server"
+	"codex-proxy/internal/config"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/server"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -14,7 +14,7 @@ import (
 func main() {
 	cfg := config.Load()
 
-	log.Printf("OurClaude starting...")
+	log.Printf("OurCodex starting...")
 	log.Printf("  App     → http://0.0.0.0:%s", cfg.WebPort)
 	log.Printf("  Proxy   → http://0.0.0.0:%s/proxy", cfg.WebPort)
 	log.Printf("  DB      → %s (%s)", cfg.DBPath, cfg.DBType)

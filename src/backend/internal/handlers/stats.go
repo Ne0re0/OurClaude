@@ -9,33 +9,35 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"gorm.io/gorm"
 )
 
 // modelPricing maps model name substrings to [inputPerMTok, outputPerMTok] in USD.
-var modelPricing = map[string][2]float64{
-	"claude-opus-4":          {15.0, 75.0},
-	"claude-sonnet-4":        {3.0, 15.0},
-	"claude-haiku-4":         {0.80, 4.0},
-	"claude-3-5-sonnet":      {3.0, 15.0},
-	"claude-3-5-haiku":       {0.80, 4.0},
-	"claude-3-opus":          {15.0, 75.0},
-	"claude-3-sonnet":        {3.0, 15.0},
-	"claude-3-haiku":         {0.25, 1.25},
+var modelPricing = []struct {
+	name          string
+	input, output float64
+}{
+	{"gpt-5.6-sol", 4.0, 20.0},
+	{"gpt-5.3-codex", 1.75, 14.0},
+	{"gpt-5.4-pro", 30.0, 180.0},
+	{"gpt-5.2-pro", 21.0, 168.0},
+	{"gpt-5.4", 2.50, 15.0},
+	{"gpt-5.2", 1.75, 14.0},
+	{"gpt-5.1", 1.25, 10.0},
+	{"gpt-5-mini", 0.25, 2.0},
+	{"gpt-5-nano", 0.05, 0.40},
+	{"gpt-5", 1.25, 10.0},
+	{"gpt-4.1", 2.0, 8.0},
 }
 
 func EstimateCost(model string, inputTokens, outputTokens int64) float64 {
-	for substr, price := range modelPricing {
-		if len(model) >= len(substr) {
-			for i := 0; i <= len(model)-len(substr); i++ {
-				if model[i:i+len(substr)] == substr {
-					input := float64(inputTokens) / 1_000_000 * price[0]
-					output := float64(outputTokens) / 1_000_000 * price[1]
-					return input + output
-				}
-			}
+	for _, price := range modelPricing {
+		if strings.Contains(model, price.name) {
+			input := float64(inputTokens) / 1_000_000 * price.input
+			output := float64(outputTokens) / 1_000_000 * price.output
+			return input + output
 		}
 	}
 	return 0
@@ -69,7 +71,7 @@ func (h *StatsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		Count  int64  `json:"count"`
 	}
 	var accountStatuses []accountStatus
-	h.db.Model(&database.ClaudeAccount{}).
+	h.db.Model(&database.CodexAccount{}).
 		Select("status, count(*) as count").
 		Group("status").
 		Scan(&accountStatuses)
@@ -90,18 +92,18 @@ func (h *StatsHandler) Overview(w http.ResponseWriter, r *http.Request) {
 	dailyBurn := weekCost / 7
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_requests":       totalRequests,
-		"total_input":          totalInput,
-		"total_output":         totalOutput,
-		"total_cache_read":     totalCacheRead,
-		"total_cache_write":    totalCacheWrite,
-		"cache_read_tokens":    totalCacheRead,
-		"cache_write_tokens":   totalCacheWrite,
-		"estimated_cost":       estimateCostFromDB(h.db),
-		"active_users":         activeUsers,
-		"total_users":          totalUsers,
-		"account_statuses":     accountStatuses,
-		"daily_burn_rate_usd":  dailyBurn,
+		"total_requests":        totalRequests,
+		"total_input":           totalInput,
+		"total_output":          totalOutput,
+		"total_cache_read":      totalCacheRead,
+		"total_cache_write":     totalCacheWrite,
+		"cache_read_tokens":     totalCacheRead,
+		"cache_write_tokens":    totalCacheWrite,
+		"estimated_cost":        estimateCostFromDB(h.db),
+		"active_users":          activeUsers,
+		"total_users":           totalUsers,
+		"account_statuses":      accountStatuses,
+		"daily_burn_rate_usd":   dailyBurn,
 		"projected_monthly_usd": dailyBurn * 30,
 	})
 }
@@ -432,9 +434,9 @@ func (h *StatsHandler) Heatmap(w http.ResponseWriter, r *http.Request) {
 	since := time.Now().AddDate(0, 0, -days)
 
 	type point struct {
-		DayOfWeek  int   `json:"day_of_week"`  // 0=Sun .. 6=Sat
-		HourOfDay  int   `json:"hour_of_day"`
-		Count      int64 `json:"count"`
+		DayOfWeek int   `json:"day_of_week"` // 0=Sun .. 6=Sat
+		HourOfDay int   `json:"hour_of_day"`
+		Count     int64 `json:"count"`
 	}
 	var points []point
 	h.db.Model(&database.UsageLog{}).
@@ -518,14 +520,14 @@ func (h *StatsHandler) Sessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type result struct {
-		UserID                  uint    `json:"user_id"`
-		UserName                string  `json:"user_name"`
-		SessionCount            int     `json:"session_count"`
-		TotalRequests           int     `json:"total_requests"`
-		AvgSessionDurationMin   float64 `json:"avg_session_duration_min"`
-		AvgMessagesPerSession   float64 `json:"avg_messages_per_session"`
-		TotalInputTokens        int     `json:"total_input_tokens"`
-		TotalOutputTokens       int     `json:"total_output_tokens"`
+		UserID                uint    `json:"user_id"`
+		UserName              string  `json:"user_name"`
+		SessionCount          int     `json:"session_count"`
+		TotalRequests         int     `json:"total_requests"`
+		AvgSessionDurationMin float64 `json:"avg_session_duration_min"`
+		AvgMessagesPerSession float64 `json:"avg_messages_per_session"`
+		TotalInputTokens      int     `json:"total_input_tokens"`
+		TotalOutputTokens     int     `json:"total_output_tokens"`
 	}
 
 	var results []result

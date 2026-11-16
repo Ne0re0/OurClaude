@@ -12,18 +12,18 @@ import (
 	"syscall"
 	"time"
 
-	"claude-proxy/internal/config"
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/handlers"
-	_ "claude-proxy/internal/metrics" // register Prometheus collectors
-	"claude-proxy/internal/middleware"
-	"claude-proxy/internal/oauth"
-	"claude-proxy/internal/pool"
-	"claude-proxy/internal/proxy"
-	"claude-proxy/internal/quota"
-	"claude-proxy/internal/settings"
-	"claude-proxy/internal/sse"
-	"claude-proxy/internal/webhook"
+	"codex-proxy/internal/config"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/handlers"
+	_ "codex-proxy/internal/metrics" // register Prometheus collectors
+	"codex-proxy/internal/middleware"
+	"codex-proxy/internal/oauth"
+	"codex-proxy/internal/pool"
+	"codex-proxy/internal/proxy"
+	"codex-proxy/internal/quota"
+	"codex-proxy/internal/settings"
+	"codex-proxy/internal/sse"
+	"codex-proxy/internal/webhook"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -41,24 +41,22 @@ type Server struct {
 	webhooks    *webhook.Dispatcher
 	logStream   *sse.Broadcaster
 	statsStream *sse.Broadcaster
-	settings     *settings.Service
-	quotaPoller  *quota.Poller
-	frontendFS   fs.FS
+	settings    *settings.Service
+	quotaPoller *quota.Poller
+	frontendFS  fs.FS
 }
 
 func New(cfg *config.Config, db *gorm.DB, frontendFS fs.FS) *Server {
 	enc := crypto.NewEncryptor(cfg.EncryptionKey)
-	oauthRefresher := oauth.New(cfg.OAuthRefreshURL, enc)
+	oauthRefresher := oauth.New(cfg.OAuthRefreshURL, cfg.OAuthClientID, enc)
 	webhooks := webhook.New(db)
 	poolMgr := pool.New(db, oauthRefresher, enc, webhooks)
 
 	settingsSvc := settings.New(db)
 	settingsSvc.SeedDefaults(map[string]string{
 		"system_prompt_inject": cfg.SystemPromptInject,
-		"prompt_cache_inject":  fmt.Sprintf("%v", cfg.PromptCacheInject),
 		"response_cache_ttl":   fmt.Sprintf("%d", int(cfg.ResponseCacheTTL.Seconds())),
 		"user_max_rpm":         fmt.Sprintf("%d", cfg.UserMaxRPM),
-		"quota_poll_interval":  "3",
 	})
 
 	return &Server{
@@ -71,7 +69,7 @@ func New(cfg *config.Config, db *gorm.DB, frontendFS fs.FS) *Server {
 		logStream:   sse.New(),
 		statsStream: sse.New(),
 		settings:    settingsSvc,
-		quotaPoller: quota.New(db, enc, settingsSvc),
+		quotaPoller: quota.New(),
 		frontendFS:  frontendFS,
 	}
 }
@@ -104,10 +102,6 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	authH := handlers.NewAuthHandler(s.db, s.cfg)
 	r.Post("/api/auth/login", authH.Login)
 	r.Post("/api/auth/logout", authH.Logout)
-
-	// Public: OAuth token exchange proxy (avoids CORS from browser)
-	oauthH := handlers.NewOAuthHandler()
-	r.Post("/api/oauth/token", oauthH.ExchangeToken)
 
 	// Public: use an invite
 	invitesH := handlers.NewInvitesHandler(s.db)
@@ -177,7 +171,7 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		r.Post("/api/admin/quotas/refresh", func(w http.ResponseWriter, r *http.Request) {
 			s.quotaPoller.PollNow()
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"message":"quota refresh triggered"}`))
+			w.Write([]byte(`{"message":"Codex rate limits update on the next proxied response"}`))
 		})
 
 		// Stats
@@ -292,8 +286,8 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	r.Get("/api/user/pool-status", userSelfH.PoolStatus)
 	r.Get("/api/user/mcp-servers", userSelfH.MCPServers)
 
-	// Anthropic proxy mounted at /proxy — ANTHROPIC_BASE_URL=http://server:3000/proxy
-	proxyH := proxy.New(s.db, s.poolMgr, s.cfg.AnthropicURL, s.cfg.RedisURL, s.settings, s.webhooks, s.logStream, s.statsStream)
+	// Responses API proxy mounted at /proxy; clients use a custom Codex provider.
+	proxyH := proxy.New(s.db, s.poolMgr, s.cfg.OpenAIAPIURL, s.cfg.ChatGPTURL, s.cfg.RedisURL, s.settings, s.webhooks, s.logStream, s.statsStream)
 	r.Mount("/proxy", proxyH)
 
 	r.Get("/*", s.frontendHandler())
@@ -314,7 +308,7 @@ func (s *Server) healthCheck() http.HandlerFunc {
 
 		// Count active accounts
 		var activeAccounts int64
-		s.db.Model(nil).Table("claude_accounts").Where("status = ?", "active").Count(&activeAccounts)
+		s.db.Model(nil).Table("codex_accounts").Where("status = ?", "active").Count(&activeAccounts)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -358,15 +352,14 @@ func (s *Server) frontendHandler() http.HandlerFunc {
 	}
 }
 
-
 func (s *Server) Start() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	s.poolMgr.StartAutoReset(ctx, s.cfg.PoolResetInterval)
-	s.poolMgr.StartHealthCheck(ctx, s.cfg.HealthCheckInterval, s.cfg.AnthropicURL)
+	s.poolMgr.StartHealthCheck(ctx, s.cfg.HealthCheckInterval, s.cfg.OpenAIAPIURL, s.cfg.ChatGPTURL)
 
-	// Start Anthropic quota poller
+	// Start the Codex rate-limit collector lifecycle.
 	s.quotaPoller.Start(ctx)
 
 	router := s.SetupAdminRouter()
@@ -392,7 +385,7 @@ func (s *Server) Start() error {
 		server.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("OurClaude listening on http://%s  (proxy at /proxy)", addr)
+	log.Printf("OurCodex listening on http://%s  (proxy at /proxy)", addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("server: %w", err)
 	}

@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"claude-proxy/internal/auth"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/middleware"
+	"codex-proxy/internal/auth"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"

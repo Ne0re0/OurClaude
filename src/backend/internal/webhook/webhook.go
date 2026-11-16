@@ -7,14 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"log"
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"gorm.io/gorm"
 )
@@ -120,7 +120,7 @@ func marshalDiscordPayload(event string, payload interface{}) ([]byte, error) {
 		"title":     fmt.Sprintf("%s  %s", discordEmoji(event), event),
 		"color":     discordColor(event),
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"footer":    map[string]string{"text": "OurClaude"},
+		"footer":    map[string]string{"text": "OurCodex"},
 	}
 	if len(fields) > 0 {
 		embed["fields"] = fields

@@ -7,7 +7,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const CookieName = "claude_proxy_session"
+const CookieName = "codex_proxy_session"
 
 type Claims struct {
 	AdminID  uint   `json:"admin_id"`

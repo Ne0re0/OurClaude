@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -248,7 +248,7 @@ export default function UserDetail() {
       {/* Owned accounts */}
       {stats && stats.accounts && stats.accounts.length > 0 && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Claude Accounts</h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Codex Accounts</h2>
           <div className="space-y-2">
             {stats.accounts.map((acc: Account) => {
               const expired = new Date(acc.expires_at) < new Date()

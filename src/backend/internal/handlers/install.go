@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"
@@ -61,7 +61,7 @@ func generateInstallScript(serverURL, apiToken string, dlLinks map[string]string
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("set -euo pipefail\n\n")
-	sb.WriteString("# OurClaude automatic installer\n")
+	sb.WriteString("# OurCodex automatic installer\n")
 	sb.WriteString(fmt.Sprintf("SERVER=%q\n", serverURL))
 	sb.WriteString(fmt.Sprintf("TOKEN=%q\n\n", apiToken))
 
@@ -73,12 +73,12 @@ func generateInstallScript(serverURL, apiToken string, dlLinks map[string]string
 	sb.WriteString("esac\n")
 	sb.WriteString("PLATFORM=\"${OS}-${ARCH}\"\n\n")
 
-	sb.WriteString("echo \"Installing ourclaude for ${PLATFORM}...\"\n\n")
+	sb.WriteString("echo \"Installing ourcodex for ${PLATFORM}...\"\n\n")
 
 	sb.WriteString("case \"$PLATFORM\" in\n")
 	for platform, dlPath := range dlLinks {
 		sb.WriteString(fmt.Sprintf("    %s)\n", platform))
-		sb.WriteString(fmt.Sprintf("        curl -fsSL \"%s%s\" -o /usr/local/bin/ourclaude\n", serverURL, dlPath))
+		sb.WriteString(fmt.Sprintf("        curl -fsSL \"%s%s\" -o /usr/local/bin/ourcodex\n", serverURL, dlPath))
 		sb.WriteString("        ;;\n")
 	}
 	sb.WriteString("    *)\n")
@@ -87,23 +87,8 @@ func generateInstallScript(serverURL, apiToken string, dlLinks map[string]string
 	sb.WriteString("        ;;\n")
 	sb.WriteString("esac\n\n")
 
-	sb.WriteString("chmod +x /usr/local/bin/ourclaude\n")
-	sb.WriteString("echo \"Binary installed to /usr/local/bin/ourclaude\"\n\n")
-
-	sb.WriteString("# Install RTK (token optimizer — reduces Claude Code token usage by 60-90%)\n")
-	sb.WriteString("echo \"Installing RTK token optimizer...\"\n")
-	sb.WriteString("if command -v rtk &>/dev/null; then\n")
-	sb.WriteString("    echo \"RTK already installed, skipping.\"\n")
-	sb.WriteString("else\n")
-	sb.WriteString("    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | bash && \\\n")
-	sb.WriteString("        mv \"$HOME/.local/bin/rtk\" /usr/local/bin/rtk 2>/dev/null || true\n")
-	sb.WriteString("    if command -v rtk &>/dev/null; then\n")
-	sb.WriteString("        rtk init --global 2>/dev/null || true\n")
-	sb.WriteString("        echo \"RTK installed and configured.\"\n")
-	sb.WriteString("    else\n")
-	sb.WriteString("        echo \"RTK installation failed (optional, continuing).\"\n")
-	sb.WriteString("    fi\n")
-	sb.WriteString("fi\n\n")
+	sb.WriteString("chmod +x /usr/local/bin/ourcodex\n")
+	sb.WriteString("echo \"Binary installed to /usr/local/bin/ourcodex\"\n\n")
 
 	shareFlag := ""
 	if autoShare {
@@ -112,12 +97,12 @@ func generateInstallScript(serverURL, apiToken string, dlLinks map[string]string
 	sb.WriteString("# Auto-login as the real user (not root)\n")
 	sb.WriteString("if [ -n \"${SUDO_USER:-}\" ]; then\n")
 	sb.WriteString("    echo \"Configuring for user: $SUDO_USER\"\n")
-	sb.WriteString(fmt.Sprintf("    sudo -u \"$SUDO_USER\" ourclaude login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
+	sb.WriteString(fmt.Sprintf("    sudo -u \"$SUDO_USER\" ourcodex login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
 	sb.WriteString("else\n")
-	sb.WriteString(fmt.Sprintf("    ourclaude login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
+	sb.WriteString(fmt.Sprintf("    ourcodex login \"$SERVER\" \"$TOKEN\"%s\n", shareFlag))
 	sb.WriteString("fi\n")
 	sb.WriteString("echo \"\"\n")
-	sb.WriteString("echo \"Done! Run 'ourclaude' to start using Claude.\"\n")
+	sb.WriteString("echo \"Done! Run 'ourcodex' to start using Codex.\"\n")
 
 	return sb.String()
 }

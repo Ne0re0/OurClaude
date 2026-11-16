@@ -155,7 +155,7 @@ function CreateUserModal({ pools, teams, onClose }: { pools: Pool[]; teams: Team
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Allowed models (empty = all)</label>
             <input
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
-              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="e.g. claude-haiku-4-5,claude-sonnet-4-6"
+              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="e.g. gpt-5.4,gpt-5.3-codex"
             />
             <p className="text-xs text-gray-400 mt-1">Comma-separated model names. Leave empty to allow all.</p>
           </div>
@@ -292,7 +292,7 @@ function EditUserModal({ user, pools, teams, onClose }: { user: User; pools: Poo
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Allowed models (empty = all)</label>
-            <input className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400" value={allowedModels2} onChange={e => setAllowedModels2(e.target.value)} placeholder="e.g. claude-haiku-4-5,claude-sonnet-4-6" />
+            <input className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-sm dark:bg-gray-700 dark:text-white dark:placeholder-gray-400" value={allowedModels2} onChange={e => setAllowedModels2(e.target.value)} placeholder="e.g. gpt-5.4,gpt-5.3-codex" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">IP whitelist (empty = all)</label>
@@ -443,7 +443,7 @@ function UserDetailPanel({ user, onClose }: { user: User; onClose: () => void })
           {/* Owned accounts */}
           {stats && stats.accounts && stats.accounts.length > 0 && (
             <div>
-              <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Claude Accounts</h3>
+              <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Codex Accounts</h3>
               <div className="space-y-2">
                 {stats.accounts.map((acc: Account) => {
                   const expired = new Date(acc.expires_at) < new Date()
@@ -579,8 +579,8 @@ export default function Users() {
                   <td className="px-6 py-4" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-2">
                       <button
-                        title="Copy ourclaude login command"
-                        onClick={() => copyToClipboard(`ourclaude login ${window.location.origin} ${user.api_token}`)}
+                        title="Copy ourcodex login command"
+                        onClick={() => copyToClipboard(`ourcodex login ${window.location.origin} ${user.api_token}`)}
                         className="p-1.5 text-gray-400 hover:text-brand-500 rounded"
                       >
                         <Terminal className="w-4 h-4" />

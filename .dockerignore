@@ -1,0 +1,11 @@
+.git
+.env
+.claude
+.codex
+data
+dist
+src/frontend/node_modules
+src/frontend/dist
+src/backend/cmd/server/frontend/dist
+*.db
+*.out

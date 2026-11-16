@@ -54,7 +54,7 @@ function SuccessScreen({ name, apiToken, downloadLinks = {} }: {
   downloadLinks?: Record<string, string>
 }) {
   const origin = window.location.origin
-  const loginCmd = `./ourclaude login ${origin} ${apiToken}`
+  const loginCmd = `./ourcodex login ${origin} ${apiToken}`
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
@@ -112,7 +112,7 @@ function SuccessScreen({ name, apiToken, downloadLinks = {} }: {
             <code className="flex-1 text-xs text-green-400 font-mono break-all">{loginCmd}</code>
             <CopyButton text={loginCmd} />
           </div>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Run this after <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">chmod +x ./ourclaude</code></p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Run this after <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">chmod +x ./ourcodex</code></p>
         </div>
 
         {/* API token */}
@@ -157,7 +157,7 @@ export default function InviteUse() {
           <DarkToggle />
         </div>
         <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 shadow-xl">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">Join OurClaude</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">Join OurCodex</h1>
           <p className="text-gray-500 dark:text-gray-400 mb-6">Enter your invite token and choose a name to get your API token.</p>
 
           <div className="space-y-4">

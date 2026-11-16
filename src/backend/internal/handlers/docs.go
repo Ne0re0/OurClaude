@@ -22,7 +22,7 @@ const docsHTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OurClaude — API Docs</title>
+  <title>OurCodex — API Docs</title>
   <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
   <style>
     * { box-sizing: border-box; }
@@ -35,7 +35,7 @@ const docsHTML = `<!DOCTYPE html>
     }
     .swagger-ui .topbar-wrapper img { display: none; }
     .swagger-ui .topbar-wrapper::before {
-      content: '✦ OurClaude — API Docs';
+      content: '✦ OurCodex — API Docs';
       color: #e2e8f0;
       font-size: 18px;
       font-weight: 600;

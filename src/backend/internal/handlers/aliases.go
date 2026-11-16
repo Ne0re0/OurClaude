@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"

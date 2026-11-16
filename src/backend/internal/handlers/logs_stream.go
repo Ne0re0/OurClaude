@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"claude-proxy/internal/sse"
+	"codex-proxy/internal/sse"
 )
 
 // LogStreamHandler wraps the SSE broadcaster so the admin router can serve it.

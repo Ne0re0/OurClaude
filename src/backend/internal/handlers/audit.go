@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/middleware"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/middleware"
 
 	"gorm.io/gorm"
 )

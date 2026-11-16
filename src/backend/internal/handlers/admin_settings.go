@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"claude-proxy/internal/settings"
+	"codex-proxy/internal/settings"
 
 	"gorm.io/gorm"
 )
@@ -34,10 +34,8 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Only allow known keys
 	allowed := map[string]bool{
 		"system_prompt_inject": true,
-		"prompt_cache_inject":  true,
 		"response_cache_ttl":   true,
 		"user_max_rpm":         true,
-		"quota_poll_interval":  true,
 	}
 
 	for k, v := range req {

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/oauth"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/oauth"
 )
 
-func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []database.ClaudeAccount) {
+func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []database.CodexAccount) {
 	t.Helper()
 
 	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "selection.db"), "")
@@ -34,9 +34,9 @@ func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []dat
 		t.Fatalf("create pool: %v", err)
 	}
 
-	accounts := make([]database.ClaudeAccount, 0, len(quotas))
+	accounts := make([]database.CodexAccount, 0, len(quotas))
 	for i, quota := range quotas {
-		account := database.ClaudeAccount{
+		account := database.CodexAccount{
 			Name:             fmt.Sprintf("account-%d", i+1),
 			AccessToken:      accessToken,
 			RefreshToken:     refreshToken,
@@ -56,16 +56,16 @@ func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []dat
 			reset = time.Now().Add(30 * time.Minute)
 		}
 		if err := db.Create(&database.AccountQuota{
-			AccountID:      account.ID,
-			FiveHourPct:    quota,
-			FiveHourResets: reset.Format(time.RFC3339),
+			AccountID:     account.ID,
+			PrimaryPct:    float64(quota),
+			PrimaryResets: reset.Format(time.RFC3339),
 		}).Error; err != nil {
 			t.Fatalf("create account quota: %v", err)
 		}
 		accounts = append(accounts, account)
 	}
 
-	manager := New(db, oauth.New("http://unused.invalid", enc), enc, nil)
+	manager := New(db, oauth.New("http://unused.invalid", "test-client", enc), enc, nil)
 	return manager, poolRecord.ID, accounts
 }
 

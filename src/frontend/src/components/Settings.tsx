@@ -274,21 +274,7 @@ function SystemConfigSection() {
           />
           <p className="mt-1 text-xs text-gray-400">Leave empty to disable. Injected before the user's system prompt.</p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Prompt Cache Injection</label>
-            <button
-              onClick={() => set('prompt_cache_inject', local.prompt_cache_inject === 'true' ? 'false' : 'true')}
-              className={`w-full px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                local.prompt_cache_inject === 'true'
-                  ? 'border-green-500 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
-                  : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400'
-              }`}
-            >
-              {local.prompt_cache_inject === 'true' ? 'Enabled' : 'Disabled'}
-            </button>
-            <p className="mt-1 text-xs text-gray-400">Auto-inject cache_control on long prompts</p>
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Response Cache TTL (seconds)</label>
             <input

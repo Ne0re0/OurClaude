@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,11 +9,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"claude-proxy/internal/config"
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/oauth"
-	"claude-proxy/internal/pool"
+	"codex-proxy/internal/config"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/oauth"
+	"codex-proxy/internal/pool"
 
 	"gorm.io/gorm"
 )
@@ -32,48 +30,69 @@ func NewAccountsHandler(db *gorm.DB, enc *crypto.Encryptor, oauthRefresher *oaut
 	return &AccountsHandler{db: db, enc: enc, oauth: oauthRefresher, poolMgr: poolMgr, cfg: cfg}
 }
 
-func refreshTokenHash(plaintext string) string {
-	h := sha256.Sum256([]byte(plaintext))
-	return hex.EncodeToString(h[:])
-}
-
 // upsertOAuthAccount creates or updates an account based on refresh token hash (dedup).
 // Returns the account and true if it was updated (existing), false if created (new).
-func (h *AccountsHandler) upsertOAuthAccount(name string, accessToken, refreshToken string, expiresAt time.Time, ownerUserID *uint) (*database.ClaudeAccount, bool, error) {
-	encAccess, err := h.enc.Encrypt(accessToken)
+func (h *AccountsHandler) upsertOAuthAccount(name string, creds oauth.CredentialSet, ownerUserID *uint) (*database.CodexAccount, bool, error) {
+	encAccess, err := h.enc.Encrypt(creds.AccessToken)
 	if err != nil {
 		return nil, false, fmt.Errorf("encrypt access: %w", err)
 	}
-	encRefresh, err := h.enc.Encrypt(refreshToken)
+	encRefresh, err := h.enc.Encrypt(creds.RefreshToken)
 	if err != nil {
 		return nil, false, fmt.Errorf("encrypt refresh: %w", err)
 	}
-	hash := refreshTokenHash(refreshToken)
+	encID, err := h.enc.Encrypt(creds.IDToken)
+	if err != nil {
+		return nil, false, fmt.Errorf("encrypt ID token: %w", err)
+	}
+	hash := oauth.RefreshTokenHash(creds.RefreshToken)
 
-	// Check for existing account with same refresh token
-	var existing database.ClaudeAccount
-	if err := h.db.Where("refresh_token_hash = ?", hash).First(&existing).Error; err == nil {
+	// The refresh token rotates. The ChatGPT account ID lets a re-import update
+	// the same account even when the local Codex client refreshed first.
+	var existing database.CodexAccount
+	query := h.db.Where("refresh_token_hash = ?", hash)
+	if creds.AccountID != "" {
+		query = query.Or("chat_gpt_account_id = ?", creds.AccountID)
+	}
+	if err := query.First(&existing).Error; err == nil {
 		// Update existing
-		h.db.Model(&existing).Updates(map[string]interface{}{
-			"access_token":  encAccess,
-			"refresh_token": encRefresh,
-			"expires_at":    expiresAt,
-			"status":        "active",
-			"last_error":    "",
-		})
+		updates := map[string]interface{}{
+			"access_token":         encAccess,
+			"refresh_token":        encRefresh,
+			"refresh_token_hash":   hash,
+			"id_token":             encID,
+			"chat_gpt_account_id":  creds.AccountID,
+			"oauth_issuer":         creds.Issuer,
+			"oauth_client_id":      creds.ClientID,
+			"oauth_login_owner_id": creds.LoginOwnerID,
+			"expires_at":           creds.ExpiresAt,
+			"status":               "active",
+			"last_error":           "",
+		}
+		if ownerUserID != nil {
+			updates["owner_user_id"] = ownerUserID
+		}
+		if err := h.db.Model(&existing).Updates(updates).Error; err != nil {
+			return nil, false, fmt.Errorf("update: %w", err)
+		}
 		return &existing, true, nil
 	}
 
 	// Create new
-	account := database.ClaudeAccount{
-		Name:             name,
-		AccountType:      "oauth",
-		AccessToken:      encAccess,
-		RefreshToken:     encRefresh,
-		RefreshTokenHash: hash,
-		ExpiresAt:        expiresAt,
-		Status:           "active",
-		OwnerUserID:      ownerUserID,
+	account := database.CodexAccount{
+		Name:              name,
+		AccountType:       "oauth",
+		AccessToken:       encAccess,
+		RefreshToken:      encRefresh,
+		RefreshTokenHash:  hash,
+		IDToken:           encID,
+		ChatGPTAccountID:  creds.AccountID,
+		OAuthIssuer:       creds.Issuer,
+		OAuthClientID:     creds.ClientID,
+		OAuthLoginOwnerID: creds.LoginOwnerID,
+		ExpiresAt:         creds.ExpiresAt,
+		Status:            "active",
+		OwnerUserID:       ownerUserID,
 	}
 	if err := h.db.Create(&account).Error; err != nil {
 		return nil, false, fmt.Errorf("create: %w", err)
@@ -82,20 +101,12 @@ func (h *AccountsHandler) upsertOAuthAccount(name string, accessToken, refreshTo
 }
 
 func (h *AccountsHandler) List(w http.ResponseWriter, r *http.Request) {
-	var accounts []database.ClaudeAccount
+	var accounts []database.CodexAccount
 	if err := h.db.Preload("Pools").Find(&accounts).Error; err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to fetch accounts"))
 		return
 	}
 	writeJSON(w, http.StatusOK, accounts)
-}
-
-type credentialsJSON struct {
-	ClaudeAiOauth struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresAt    int64  `json:"expiresAt"` // milliseconds
-	} `json:"claudeAiOauth"`
 }
 
 func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +115,7 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		PoolIDs         []uint `json:"pool_ids"`
 		AccountType     string `json:"account_type"`     // "oauth" (default) or "apikey"
 		CredentialsJSON string `json:"credentials_json"` // for oauth
-		APIKey          string `json:"api_key"`           // for apikey
+		APIKey          string `json:"api_key"`          // for apikey
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -116,7 +127,7 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 
 	if req.AccountType == "apikey" {
 		// API key account
@@ -134,13 +145,14 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, errResp("failed to encrypt"))
 			return
 		}
-		account = database.ClaudeAccount{
+		account = database.CodexAccount{
 			Name:         req.Name,
 			AccountType:  "apikey",
 			AccessToken:  encKey,
 			RefreshToken: encEmpty,
+			IDToken:      encEmpty,
 			ExpiresAt:    time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
-			Status:       "disabled",
+			Status:       "active",
 		}
 	} else {
 		// OAuth account (default)
@@ -148,22 +160,12 @@ func (h *AccountsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errResp("credentials_json is required for OAuth accounts"))
 			return
 		}
-		var creds credentialsJSON
-		if err := json.Unmarshal([]byte(req.CredentialsJSON), &creds); err != nil {
-			writeJSON(w, http.StatusBadRequest, errResp("invalid credentials JSON format"))
+		creds, err := oauth.ParseAuthJSON([]byte(req.CredentialsJSON))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
 			return
 		}
-		if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.RefreshToken == "" {
-			writeJSON(w, http.StatusBadRequest, errResp("credentials must contain claudeAiOauth.accessToken and claudeAiOauth.refreshToken"))
-			return
-		}
-		var expiresAt time.Time
-		if creds.ClaudeAiOauth.ExpiresAt > 0 {
-			expiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-		} else {
-			expiresAt = time.Now().Add(1 * time.Hour)
-		}
-		acc, updated, err := h.upsertOAuthAccount(req.Name, creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, nil)
+		acc, updated, err := h.upsertOAuthAccount(req.Name, creds, nil)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("failed to create account: "+err.Error()))
 			return
@@ -201,7 +203,7 @@ func (h *AccountsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.Preload("Pools").First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -239,7 +241,7 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(updates) > 0 {
-		if err := h.db.Model(&database.ClaudeAccount{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		if err := h.db.Model(&database.CodexAccount{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			writeJSON(w, http.StatusInternalServerError, errResp("failed to update account"))
 			return
 		}
@@ -256,7 +258,7 @@ func (h *AccountsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	h.db.Preload("Pools").First(&account, id)
 	logAudit(h.db, r, "update_account", fmt.Sprintf("account:%s", account.Name), "")
 	writeJSON(w, http.StatusOK, account)
@@ -269,13 +271,13 @@ func (h *AccountsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
 	}
 	h.db.Where("account_id = ?", id).Delete(&database.AccountPool{})
-	if err := h.db.Delete(&database.ClaudeAccount{}, id).Error; err != nil {
+	if err := h.db.Delete(&database.CodexAccount{}, id).Error; err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to delete account"))
 		return
 	}
@@ -290,7 +292,7 @@ func (h *AccountsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -314,6 +316,15 @@ func (h *AccountsHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	account.AccessToken = access
 	account.RefreshToken = refresh
+	idToken := ""
+	if account.IDToken != "" {
+		idToken, err = h.enc.Decrypt(account.IDToken)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to decrypt ID token"))
+			return
+		}
+	}
+	account.IDToken = idToken
 
 	if err := h.oauth.RefreshToken(h.db, &account); err != nil {
 		writeJSON(w, http.StatusBadGateway, errResp("token refresh failed: "+err.Error()))
@@ -399,7 +410,7 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -411,14 +422,14 @@ func (h *AccountsHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Simple test: list models
-	req, _ := http.NewRequest("GET", "https://api.anthropic.com/v1/models", nil)
+	upstream := h.cfg.OpenAIAPIURL
+	if account.AccountType == "oauth" {
+		upstream = h.cfg.ChatGPTURL
+	}
+	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(upstream, "/")+"/models", nil)
 	req.Header.Set("Authorization", "Bearer "+access)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	// OAuth consumer tokens require these headers
-	if strings.HasPrefix(access, "sk-ant-oat") {
-		req.Header.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
-		req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	if account.AccountType == "oauth" && account.ChatGPTAccountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -443,7 +454,7 @@ func (h *AccountsHandler) Credentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -460,13 +471,24 @@ func (h *AccountsHandler) Credentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"claudeAiOauth": map[string]interface{}{
-			"accessToken":  access,
-			"refreshToken": refresh,
-			"expiresAt":    account.ExpiresAt.UnixMilli(),
-		},
-	})
+	idToken := ""
+	if account.IDToken != "" {
+		idToken, err = h.enc.Decrypt(account.IDToken)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to decrypt ID token"))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, oauth.BuildAuthFile(oauth.CredentialSet{
+		IDToken:      idToken,
+		AccessToken:  access,
+		RefreshToken: refresh,
+		AccountID:    account.ChatGPTAccountID,
+		Issuer:       account.OAuthIssuer,
+		ClientID:     account.OAuthClientID,
+		LoginOwnerID: account.OAuthLoginOwnerID,
+		ExpiresAt:    account.ExpiresAt,
+	}))
 }
 
 // DELETE /api/admin/accounts/{id}/pool?pool_id=N — unlinks the account from a pool (or all pools if no pool_id)
@@ -492,7 +514,7 @@ func (h *AccountsHandler) Unlink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/admin/accounts/{id}/quota — returns cached Anthropic usage quota for this account
+// GET /api/admin/accounts/{id}/quota — returns cached OpenAI usage quota for this account
 func (h *AccountsHandler) Quota(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
@@ -500,7 +522,7 @@ func (h *AccountsHandler) Quota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -513,7 +535,7 @@ func (h *AccountsHandler) Quota(w http.ResponseWriter, r *http.Request) {
 
 	var quota database.AccountQuota
 	if err := h.db.Where("account_id = ?", id).First(&quota).Error; err != nil {
-		writeJSON(w, http.StatusNotFound, errResp("no quota data yet — poller may not have run"))
+		writeJSON(w, http.StatusNotFound, errResp("no rate-limit data yet — use this account for a Codex request first"))
 		return
 	}
 
@@ -523,7 +545,7 @@ func (h *AccountsHandler) Quota(w http.ResponseWriter, r *http.Request) {
 // GET /api/admin/quotas — returns all account quotas (for Quotas page)
 func (h *AccountsHandler) AllQuotas(w http.ResponseWriter, r *http.Request) {
 	// Return ALL OAuth accounts, with quota data if available
-	var accounts []database.ClaudeAccount
+	var accounts []database.CodexAccount
 	h.db.Preload("Pools").Where("account_type = ?", "oauth").Find(&accounts)
 
 	type quotaWithAccount struct {
@@ -564,7 +586,7 @@ func (h *AccountsHandler) ToggleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.First(&account, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("account not found"))
 		return
@@ -582,24 +604,17 @@ func (h *AccountsHandler) ToggleStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/admin/accounts/import-credentials — import account from raw credentials.json
 func (h *AccountsHandler) ImportCredentials(w http.ResponseWriter, r *http.Request) {
-	var creds credentialsJSON
-	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp("invalid credentials JSON — expected {claudeAiOauth: {accessToken, refreshToken, expiresAt}}"))
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid Codex auth.json"))
 		return
 	}
-	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.RefreshToken == "" {
-		writeJSON(w, http.StatusBadRequest, errResp("missing accessToken or refreshToken in claudeAiOauth"))
+	creds, err := oauth.ParseAuthJSON(raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
 		return
 	}
-
-	var expiresAt time.Time
-	if creds.ClaudeAiOauth.ExpiresAt > 0 {
-		expiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-	} else {
-		expiresAt = time.Now().Add(1 * time.Hour)
-	}
-
-	account, updated, err := h.upsertOAuthAccount("Imported "+time.Now().Format("2006-01-02 15:04"), creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, nil)
+	account, updated, err := h.upsertOAuthAccount("Imported "+time.Now().Format("2006-01-02 15:04"), creds, nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed: "+err.Error()))
 		return
@@ -629,24 +644,17 @@ func (h *AccountsHandler) PublicImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var creds credentialsJSON
-	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp("invalid JSON — expected {claudeAiOauth: {accessToken, refreshToken, expiresAt}}"))
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid Codex auth.json"))
 		return
 	}
-	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.RefreshToken == "" {
-		writeJSON(w, http.StatusBadRequest, errResp("missing accessToken or refreshToken"))
+	creds, err := oauth.ParseAuthJSON(raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
 		return
 	}
-
-	var expiresAt time.Time
-	if creds.ClaudeAiOauth.ExpiresAt > 0 {
-		expiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-	} else {
-		expiresAt = time.Now().Add(1 * time.Hour)
-	}
-
-	account, updated, err := h.upsertOAuthAccount(user.Name+" (imported)", creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.RefreshToken, expiresAt, &user.ID)
+	account, updated, err := h.upsertOAuthAccount(user.Name+" (imported)", creds, &user.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed: "+err.Error()))
 		return

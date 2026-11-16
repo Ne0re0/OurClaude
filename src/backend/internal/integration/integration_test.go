@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"claude-proxy/internal/config"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/server"
+	"codex-proxy/internal/config"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/server"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -26,7 +26,8 @@ func setupServer(t *testing.T) (*httptest.Server, *config.Config) {
 		JWTExpiry:     1 * time.Hour,
 		DBType:        "sqlite",
 		DBPath:        ":memory:",
-		AnthropicURL:  "http://localhost:9999",
+		OpenAIAPIURL:  "http://localhost:9999/v1",
+		ChatGPTURL:    "http://localhost:9999/backend-api/codex",
 		EncryptionKey: "test-enc-key-12345",
 	}
 
@@ -114,7 +115,7 @@ func TestLogin_Success(t *testing.T) {
 	}
 	hasCookie := false
 	for _, c := range resp.Cookies() {
-		if c.Name == "claude_proxy_session" {
+		if c.Name == "codex_proxy_session" {
 			hasCookie = true
 		}
 	}
@@ -165,8 +166,7 @@ func TestUserCRUD(t *testing.T) {
 
 	// Create user
 	resp := postJSON(t, ts, "/api/admin/users", map[string]interface{}{
-		"name":  "Alice",
-		"email": "alice@example.com",
+		"name": "Alice",
 	}, cookies)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create user: expected 201, got %d", resp.StatusCode)
@@ -188,14 +188,6 @@ func TestUserCRUD(t *testing.T) {
 		t.Errorf("list users: expected 200, got %d", listResp.StatusCode)
 	}
 
-	// Duplicate email
-	dup := postJSON(t, ts, "/api/admin/users", map[string]interface{}{
-		"name":  "Alice2",
-		"email": "alice@example.com",
-	}, cookies)
-	if dup.StatusCode != http.StatusConflict {
-		t.Errorf("duplicate email: expected 409, got %d", dup.StatusCode)
-	}
 }
 
 func TestPoolCRUD(t *testing.T) {
@@ -222,7 +214,7 @@ func TestInviteFlow(t *testing.T) {
 
 	// Create invite
 	createResp := postJSON(t, ts, "/api/admin/invites", map[string]interface{}{
-		"label":           "Test invite",
+		"label":            "Test invite",
 		"expires_in_hours": 24,
 	}, cookies)
 	if createResp.StatusCode != http.StatusCreated {
@@ -242,7 +234,6 @@ func TestInviteFlow(t *testing.T) {
 	useResp := postJSON(t, ts, "/api/invite/use", map[string]string{
 		"token": invite.Token,
 		"name":  "Bob",
-		"email": "bob@example.com",
 	}, nil) // no auth cookies - public endpoint
 	if useResp.StatusCode != http.StatusCreated {
 		t.Fatalf("use invite: expected 201, got %d", useResp.StatusCode)
@@ -250,22 +241,21 @@ func TestInviteFlow(t *testing.T) {
 
 	var result struct {
 		APIToken string `json:"api_token"`
-		Email    string `json:"email"`
+		Name     string `json:"name"`
 	}
 	json.NewDecoder(useResp.Body).Decode(&result)
 
 	if !strings.HasPrefix(result.APIToken, "sk-proxy-") {
 		t.Errorf("expected sk-proxy- prefix, got %s", result.APIToken)
 	}
-	if result.Email != "bob@example.com" {
-		t.Errorf("expected bob@example.com, got %s", result.Email)
+	if result.Name != "Bob" {
+		t.Errorf("expected Bob, got %s", result.Name)
 	}
 
 	// Reuse should fail
 	reuse := postJSON(t, ts, "/api/invite/use", map[string]string{
 		"token": invite.Token,
 		"name":  "Bob2",
-		"email": "bob2@example.com",
 	}, nil)
 	if reuse.StatusCode != http.StatusGone {
 		t.Errorf("reuse invite: expected 410, got %d", reuse.StatusCode)

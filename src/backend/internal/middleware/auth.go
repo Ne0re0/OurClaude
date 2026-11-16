@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"claude-proxy/internal/auth"
-	"claude-proxy/internal/config"
+	"codex-proxy/internal/auth"
+	"codex-proxy/internal/config"
 )
 
 type contextKey string

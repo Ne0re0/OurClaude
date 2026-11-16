@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { setupApi, SetupLinkData } from '../lib/api'
-import { Copy, Check, Terminal, Download, Moon, Sun, ChevronDown, ChevronRight, Zap } from 'lucide-react'
+import { Copy, Check, Terminal, Download, Moon, Sun } from 'lucide-react'
 import { copyToClipboard } from '../lib/clipboard'
 
 function CopyButton({ text, className = '' }: { text: string; className?: string }) {
@@ -47,38 +47,6 @@ const PLATFORMS = [
   { id: 'windows-amd64', label: 'Windows x64' },
 ]
 
-function RTKSection() {
-  const [open, setOpen] = useState(false)
-  const rtkCmd = 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | bash && rtk init --global'
-  return (
-    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 mb-4">
-      <button onClick={() => setOpen(!open)} className="flex items-center gap-2 w-full text-left">
-        {open ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
-        <Zap className="w-4 h-4 text-amber-500" />
-        <span className="font-semibold text-gray-900 dark:text-white text-sm">Recommended: Install RTK (token optimizer)</span>
-        <span className="ml-auto text-xs text-gray-400 dark:text-gray-500">optional</span>
-      </button>
-      {open && (
-        <div className="mt-3 space-y-3">
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            <a href="https://github.com/rtk-ai/rtk" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:underline font-medium">RTK (Rust Token Killer)</a> optimizes Claude Code token usage by <strong>60-90%</strong> by filtering unnecessary context from CLI tool outputs. It runs as a transparent hook — no configuration needed after install.
-          </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            RTK is <strong>included by default</strong> in the automatic install script above. To install manually:
-          </p>
-          <div className="bg-gray-900 dark:bg-gray-950 rounded-lg px-4 py-3 flex items-center gap-2">
-            <code className="flex-1 text-xs text-green-400 font-mono break-all">{rtkCmd}</code>
-            <CopyButton text={rtkCmd} />
-          </div>
-          <p className="text-xs text-gray-400 dark:text-gray-500">
-            After install, RTK hooks into Claude Code automatically. Run <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">rtk gain</code> to see token savings.
-          </p>
-        </div>
-      )}
-    </div>
-  )
-}
-
 const detectedPlatform = (() => {
   const ua = navigator.userAgent.toLowerCase()
   if (ua.includes('mac')) return 'darwin-arm64'
@@ -91,8 +59,8 @@ function AutoInstall({ origin, token }: { origin: string; token: string }) {
   const url = autoShare ? `${origin}/api/install/${token}` : `${origin}/api/install/${token}?no-share=1`
   const cmd = `curl -sSL ${url} | sudo bash`
   const note = autoShare
-    ? 'Includes auto-share: your local Claude account will be linked to the proxy automatically.'
-    : 'Without auto-share: you will need to manually share your Claude account later.'
+    ? 'Includes auto-share: your local Codex account will be linked to the proxy automatically.'
+    : 'Without auto-share: you will need to manually share your Codex account later.'
   return (
     <div>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">One command to download, install, and login:</p>
@@ -107,7 +75,7 @@ function AutoInstall({ origin, token }: { origin: string; token: string }) {
           onChange={e => setAutoShare(e.target.checked)}
           className="rounded border-gray-300 text-brand-500 focus:ring-brand-500"
         />
-        <span className="text-xs text-gray-600 dark:text-gray-400">Auto-share Claude account with proxy</span>
+        <span className="text-xs text-gray-600 dark:text-gray-400">Auto-share Codex account with proxy</span>
       </label>
       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{note}</p>
     </div>
@@ -173,7 +141,7 @@ function InstallTabs({ origin, token, data, loginCmd }: { origin: string; token:
             <div className="space-y-2">
               {PLATFORMS.map(p => {
                 const dlPath = data.download_links[p.id] ?? `/api/downloads/${p.id}`
-                const wgetCmd = `wget -O ourclaude ${origin}${dlPath} && chmod +x ourclaude`
+                const wgetCmd = `wget -O ourcodex ${origin}${dlPath} && chmod +x ourcodex`
                 return (
                   <div key={p.id} className="bg-gray-900 dark:bg-gray-950 rounded-lg px-4 py-2 flex items-center gap-2">
                     <span className="text-xs text-gray-400 font-medium shrink-0 w-28">{p.label}:</span>
@@ -193,7 +161,7 @@ function InstallTabs({ origin, token, data, loginCmd }: { origin: string; token:
               <CopyButton text={loginCmd} />
             </div>
             <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-              Run this after <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">chmod +x ./ourclaude</code>
+              Run this after <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">chmod +x ./ourcodex</code>
             </p>
           </div>
         </div>
@@ -244,7 +212,7 @@ export default function SetupLink() {
   }
 
   const origin = window.location.origin
-  const loginCmd = `./ourclaude login ${origin} ${data.api_token}`
+  const loginCmd = `./ourcodex login ${origin} ${data.api_token}`
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-4">
@@ -275,7 +243,6 @@ export default function SetupLink() {
         <InstallTabs origin={origin} token={token!} data={data} loginCmd={loginCmd} />
 
         {/* RTK recommendation */}
-        <RTKSection />
 
         {/* API token */}
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">

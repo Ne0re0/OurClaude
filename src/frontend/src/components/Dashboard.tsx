@@ -107,7 +107,7 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Overview of your Claude proxy.</p>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">Overview of your Codex proxy.</p>
       </div>
 
       {/* Quota alert banner */}
@@ -133,10 +133,10 @@ export default function Dashboard() {
           <h2 className="text-base font-semibold text-brand-900 dark:text-white mb-4">Getting started</h2>
           <ol className="space-y-3">
             {[
-              { step: 1, label: 'Create a pool', desc: 'Group your Claude accounts into a pool.', to: '/pools' },
-              { step: 2, label: 'Add a Claude account', desc: 'Paste ~/.claude/.credentials.json to add an OAuth account.', to: '/accounts' },
+              { step: 1, label: 'Create a pool', desc: 'Group your Codex accounts into a pool.', to: '/pools' },
+              { step: 2, label: 'Add a Codex account', desc: 'Paste ~/.codex/auth.json to add a ChatGPT OAuth account.', to: '/accounts' },
               { step: 3, label: 'Create a user', desc: 'Generate an sk-proxy-* token for a user.', to: '/users' },
-              { step: 4, label: 'Download ourclaude', desc: 'Get the CLI wrapper binary.', to: '/downloads' },
+              { step: 4, label: 'Download ourcodex', desc: 'Get the CLI wrapper binary.', to: '/downloads' },
             ].map(({ step, label, desc, to }) => (
               <li key={step} className="flex items-start gap-3">
                 <span className="flex-shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-xs flex items-center justify-center font-bold mt-0.5">{step}</span>
@@ -151,9 +151,9 @@ export default function Dashboard() {
             <li className="flex items-start gap-3">
               <span className="flex-shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-xs flex items-center justify-center font-bold mt-0.5">5</span>
               <div>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Run ourclaude login</p>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Run ourcodex login</p>
                 <code className="text-xs bg-gray-100 dark:bg-gray-700 dark:text-gray-300 px-2 py-0.5 rounded font-mono">
-                  ourclaude login http://your-server:3000 sk-proxy-xxxxx
+                  ourcodex login http://your-server:3000 sk-proxy-xxxxx
                 </code>
               </div>
             </li>
@@ -212,7 +212,7 @@ export default function Dashboard() {
           color="bg-blue-500"
         />
         <StatCard
-          label="Claude Accounts"
+          label="Codex Accounts"
           value={(data.account_statuses ?? []).reduce((s, a) => s + a.count, 0)}
           icon={Server}
           color="bg-emerald-500"

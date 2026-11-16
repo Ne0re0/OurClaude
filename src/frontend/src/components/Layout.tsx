@@ -64,7 +64,7 @@ export default function Layout({ admin, children }: LayoutProps) {
       document.title = 'Gestion du Parti'
     } else {
       document.documentElement.classList.remove('comrade')
-      document.title = 'OurClaude'
+      document.title = 'OurCodex'
     }
     const link = document.querySelector("link[rel~='icon']") as HTMLLinkElement
     if (link) link.href = comradeMode ? '/logo.png' : '/favicon.svg'
@@ -148,7 +148,7 @@ export default function Layout({ admin, children }: LayoutProps) {
                 </svg>
               </div>
             )}
-            <span className="font-semibold text-sm">{comradeMode ? 'NashClaude' : 'OurClaude'}</span>
+            <span className="font-semibold text-sm">{comradeMode ? 'NashCodex' : 'OurCodex'}</span>
           </div>
         </div>
 

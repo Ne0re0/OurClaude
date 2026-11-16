@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"

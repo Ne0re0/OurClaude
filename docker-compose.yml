@@ -1,5 +1,7 @@
+name: ourcodex
+
 services:
-  claude-proxy:
+  codex-proxy:
     build:
       context: .
       dockerfile: src/backend/Dockerfile
@@ -7,26 +9,30 @@ services:
          CLI_PLATFORMS: linux-amd64
     ports:
       - "${WEB_PORT:-3000}:3000"
-    #volumes:
-      #- ./data:/data
+    volumes:
+      - ourcodex-data:/data
     environment:
       - WEB_PORT=3000
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD is required on first run}
-      - DB_PATH=/data/claude-proxy.db
-      - ANTHROPIC_URL=${ANTHROPIC_URL:-https://api.anthropic.com}
-      - OAUTH_REFRESH_URL=${OAUTH_REFRESH_URL:-https://console.anthropic.com/v1/oauth/token}
+      - DB_PATH=/data/codex-proxy.db
+      - OPENAI_API_URL=${OPENAI_API_URL:-https://api.openai.com/v1}
+      - CHATGPT_CODEX_URL=${CHATGPT_CODEX_URL:-https://chatgpt.com/backend-api/codex}
+      - OAUTH_REFRESH_URL=${OAUTH_REFRESH_URL:-https://auth.openai.com/oauth/token}
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-app_EMoamEEZ73f0CkXaXp7hrann}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-24}
       - POOL_RESET_INTERVAL_MINUTES=${POOL_RESET_INTERVAL_MINUTES:-}
       - USER_MAX_RPM=${USER_MAX_RPM:-0}
-      - DIST_DIR=/usr/local/share/cl
-      - PROMPT_CACHE_INJECT=${PROMPT_CACHE_INJECT:-true}
+      - DIST_DIR=/usr/local/share/ourcodex
       - HEALTH_CHECK_INTERVAL_MINUTES=${HEALTH_CHECK_INTERVAL_MINUTES:-}
       - REDIS_URL=${REDIS_URL:-}
       - DB_TYPE=${DB_TYPE:-sqlite}
       - POSTGRES_DSN=${POSTGRES_DSN:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - RESPONSE_CACHE_TTL_SECONDS=${RESPONSE_CACHE_TTL_SECONDS:-0}
+      - SYSTEM_PROMPT_INJECT=${SYSTEM_PROMPT_INJECT:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
@@ -34,4 +40,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  ourcodex-data:
 

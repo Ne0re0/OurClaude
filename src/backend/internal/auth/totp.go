@@ -6,7 +6,7 @@ import (
 
 func GenerateTOTPSecret(username string) (secret, qrURL string, err error) {
 	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      "Claude Proxy",
+		Issuer:      "Codex Proxy",
 		AccountName: username,
 	})
 	if err != nil {

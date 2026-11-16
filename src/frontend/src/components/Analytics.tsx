@@ -35,7 +35,7 @@ function estimateCostPerDay(day: DayStat): number {
 
 function shortModel(name: string): string {
   return name
-    .replace('claude-', '')
+    .replace('codex-', '')
     .replace(/-\d{8}$/, '')  // remove date suffix
     .replace('-latest', '')
 }

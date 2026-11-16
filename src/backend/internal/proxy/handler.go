@@ -14,11 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/metrics"
-	"claude-proxy/internal/pool"
-	"claude-proxy/internal/ratelimit"
-	"claude-proxy/internal/sse"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/metrics"
+	"codex-proxy/internal/pool"
+	"codex-proxy/internal/quota"
+	"codex-proxy/internal/ratelimit"
+	"codex-proxy/internal/sse"
 
 	"gorm.io/gorm"
 )
@@ -120,20 +121,21 @@ func (c *quotaCache) set(userID uint, entry *quotaCacheEntry) {
 }
 
 type Handler struct {
-	db          *gorm.DB
-	pool        *pool.Manager
-	upstream    string
-	client      *http.Client
-	limiter     ratelimit.Limiter
-	settings    SettingsProvider
-	webhooks    WebhookDispatcher
-	logStream   *sse.Broadcaster
-	statsStream *sse.Broadcaster
-	quotaAlerts quotaAlertState
-	aliases     aliasCache
-	quotas      quotaCache
-	respCache   *responseCache
-	inflight    sync.Map // map[string]struct{} for in-flight idempotency keys
+	db              *gorm.DB
+	pool            *pool.Manager
+	apiUpstream     string
+	chatGPTUpstream string
+	client          *http.Client
+	limiter         ratelimit.Limiter
+	settings        SettingsProvider
+	webhooks        WebhookDispatcher
+	logStream       *sse.Broadcaster
+	statsStream     *sse.Broadcaster
+	quotaAlerts     quotaAlertState
+	aliases         aliasCache
+	quotas          quotaCache
+	respCache       *responseCache
+	inflight        sync.Map // map[string]struct{} for in-flight idempotency keys
 }
 
 // SettingsProvider reads runtime settings (backed by DB).
@@ -143,24 +145,25 @@ type SettingsProvider interface {
 	GetInt(key string) int
 }
 
-func New(db *gorm.DB, poolMgr *pool.Manager, upstream string, redisURL string, settings SettingsProvider, wh WebhookDispatcher, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) *Handler {
+func New(db *gorm.DB, poolMgr *pool.Manager, apiUpstream, chatGPTUpstream, redisURL string, settings SettingsProvider, wh WebhookDispatcher, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) *Handler {
 	rpm := 0
 	if settings != nil {
 		rpm = settings.GetInt("user_max_rpm")
 	}
 	return &Handler{
-		db:          db,
-		pool:        poolMgr,
-		upstream:    strings.TrimRight(upstream, "/"),
-		limiter:     ratelimit.New(rpm, redisURL),
-		settings:    settings,
-		webhooks:    wh,
-		logStream:   logStream,
-		statsStream: statsStream,
-		quotaAlerts: quotaAlertState{lastSent: make(map[uint]time.Time)},
-		aliases:     aliasCache{data: make(map[string]string)},
-		quotas:      quotaCache{cache: make(map[uint]*quotaCacheEntry)},
-		respCache:   newResponseCache(0), // TTL read from settings per-request
+		db:              db,
+		pool:            poolMgr,
+		apiUpstream:     strings.TrimRight(apiUpstream, "/"),
+		chatGPTUpstream: strings.TrimRight(chatGPTUpstream, "/"),
+		limiter:         ratelimit.New(rpm, redisURL),
+		settings:        settings,
+		webhooks:        wh,
+		logStream:       logStream,
+		statsStream:     statsStream,
+		quotaAlerts:     quotaAlertState{lastSent: make(map[uint]time.Time)},
+		aliases:         aliasCache{data: make(map[string]string)},
+		quotas:          quotaCache{cache: make(map[uint]*quotaCacheEntry)},
+		respCache:       newResponseCache(0), // TTL read from settings per-request
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -181,7 +184,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.authenticate(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized — check your API token with 'ourclaude status' or re-login with 'ourclaude login'")
+		writeError(w, http.StatusUnauthorized, "unauthorized — check your API token with 'ourcodex status' or re-login with 'ourcodex login'")
 		return
 	}
 
@@ -225,15 +228,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(poolIDs) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"type": "error",
-			"error": map[string]string{
-				"type":    "api_error",
-				"message": "No pool linked to your account. Ask an administrator to assign you to a pool.",
-			},
-		})
+		writeError(w, http.StatusServiceUnavailable, "no pool linked to your account; ask an administrator to assign one")
 		return
 	}
 
@@ -266,8 +261,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if poolRec.DailyTokenQuota > 0 {
 				var used int64
 				h.db.Model(&database.UsageLog{}).
-					Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-					Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+					Joins("JOIN codex_accounts ON usage_logs.account_id = codex_accounts.id").
+					Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
 					Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", firstPoolID, today).
 					Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
 					Row().Scan(&used)
@@ -276,8 +271,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if poolRec.MonthlyTokenQuota > 0 {
 				var used int64
 				h.db.Model(&database.UsageLog{}).
-					Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-					Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+					Joins("JOIN codex_accounts ON usage_logs.account_id = codex_accounts.id").
+					Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
 					Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", firstPoolID, monthStart).
 					Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
 					Row().Scan(&used)
@@ -351,14 +346,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// Extract messages for conversation logging (before alias rewriting)
+	// Extract Responses API input for conversation logging (before rewriting).
 	var reqParsed struct {
-		Messages json.RawMessage `json:"messages"`
+		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(body, &reqParsed); err != nil {
 		log.Printf("proxy: failed to parse request body for conversation logging: %v", err)
 	}
-	messagesJSON := string(reqParsed.Messages)
+	messagesJSON := string(reqParsed.Input)
 
 	// System prompt injection (runtime-editable via settings)
 	if sp := h.settings.Get("system_prompt_inject"); sp != "" {
@@ -384,11 +379,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "model not allowed in this pool")
 			return
 		}
-	}
-
-	// Prompt cache injection
-	if h.settings.GetBool("prompt_cache_inject") {
-		body = injectPromptCache(body)
 	}
 
 	// Response cache check
@@ -418,12 +408,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if lastErr != nil {
 				break
 			}
-			writeError(w, http.StatusServiceUnavailable, "no available Claude accounts: "+err.Error())
+			writeError(w, http.StatusServiceUnavailable, "no available Codex accounts: "+err.Error())
 			return
 		}
 		attemptedAccountIDs[account.ID] = struct{}{}
 
-		resp, err := h.forward(r, body, account.AccessToken, user)
+		resp, err := h.forward(r, body, account, user)
 		if err != nil {
 			if r.Context().Err() != nil {
 				return // Client disconnected — not the account's fault
@@ -437,7 +427,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Account status is managed by the quota poller (based on real usage data)
 		// and the health checker, NOT by the proxy request handler.
 		if resp.StatusCode == http.StatusTooManyRequests {
+			quota.UpdateFromHeaders(h.db, account.ID, resp.Header)
 			resp.Body.Close()
+			h.pool.MarkExhausted(account.ID)
 			log.Printf("proxy: account %d got 429, trying next account", account.ID)
 			lastErr = fmt.Errorf("account %d: rate limited", account.ID)
 			continue
@@ -465,7 +457,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) authenticate(r *http.Request) (*database.User, error) {
 	var token string
 
-	// Try all auth header patterns (Claude Code may use any of these)
+	// Accept the standard bearer token and x-api-key for compatible clients.
 	if key := r.Header.Get("x-api-key"); key != "" {
 		token = key
 	} else if key := r.Header.Get("X-Api-Key"); key != "" {
@@ -479,9 +471,9 @@ func (h *Handler) authenticate(r *http.Request) (*database.User, error) {
 		}
 	}
 
-	// Also check anthropic-auth-token header (some clients send it this way)
+	// Also check openai-auth-token header (some clients send it this way)
 	if token == "" {
-		if key := r.Header.Get("Anthropic-Auth-Token"); key != "" {
+		if key := r.Header.Get("OpenAI-Auth-Token"); key != "" {
 			token = key
 		}
 	}
@@ -501,16 +493,21 @@ func (h *Handler) authenticate(r *http.Request) (*database.User, error) {
 	return &user, nil
 }
 
-func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user *database.User) (*http.Response, error) {
+func (h *Handler) forward(r *http.Request, body []byte, account *database.CodexAccount, user *database.User) (*http.Response, error) {
 	// Safety: strip /proxy prefix if chi Mount didn't strip it
 	path := r.URL.Path
 	if strings.HasPrefix(path, "/proxy") {
 		path = strings.TrimPrefix(path, "/proxy")
 	}
+	path = strings.TrimPrefix(path, "/v1")
 	if path == "" {
 		path = "/"
 	}
-	upstreamURL := h.upstream + path
+	upstream := h.apiUpstream
+	if account.AccountType != "apikey" {
+		upstream = h.chatGPTUpstream
+	}
+	upstreamURL := upstream + path
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
@@ -522,7 +519,7 @@ func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user
 
 	for key, values := range r.Header {
 		k := strings.ToLower(key)
-		if k == "authorization" || k == "host" || k == "x-api-key" {
+		if k == "authorization" || k == "host" || k == "x-api-key" || k == "chatgpt-account-id" || k == "content-length" {
 			continue
 		}
 		for _, v := range values {
@@ -530,19 +527,9 @@ func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user
 		}
 	}
 
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// OAuth tokens (sk-ant-oat*) require specific headers for Anthropic to accept them.
-	if strings.HasPrefix(accessToken, "sk-ant-oat") {
-		req.Header.Set("Anthropic-Dangerous-Direct-Browser-Access", "true")
-		existing := req.Header.Get("Anthropic-Beta")
-		if !strings.Contains(existing, "oauth-2025-04-20") {
-			if existing != "" {
-				req.Header.Set("Anthropic-Beta", "oauth-2025-04-20,"+existing)
-			} else {
-				req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
-			}
-		}
+	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
+	if account.AccountType != "apikey" && account.ChatGPTAccountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", account.ChatGPTAccountID)
 	}
 
 	// Extra headers from user config (JSON map)
@@ -555,23 +542,12 @@ func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user
 		}
 	}
 
-	// Ensure prompt-caching beta is declared when cache injection is active.
-	if h.settings.GetBool("prompt_cache_inject") {
-		existing := req.Header.Get("anthropic-beta")
-		if !strings.Contains(existing, "prompt-caching") {
-			if existing != "" {
-				req.Header.Set("anthropic-beta", existing+",prompt-caching-2024-07-31")
-			} else {
-				req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-			}
-		}
-	}
-
 	return h.client.Do(req)
 }
 
 func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, userID, accountID uint, endpoint string, start time.Time, messagesJSON string, cacheKey string, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) {
 	defer resp.Body.Close()
+	quota.UpdateFromHeaders(h.db, accountID, resp.Header)
 
 	for key, values := range resp.Header {
 		for _, v := range values {
@@ -648,9 +624,9 @@ func (h *Handler) maybeAlertQuota(user *database.User, period string, used, quot
 	h.webhooks.Dispatch("quota.warning", map[string]interface{}{
 		"user_id": user.ID,
 		"period":  period,
-		"used":       used,
-		"quota":      quota,
-		"percent":    int(pct * 100),
+		"used":    used,
+		"quota":   quota,
+		"percent": int(pct * 100),
 	})
 }
 
@@ -664,7 +640,7 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 	}
 
 	if isStreaming {
-		// Anthropic SSE uses \r\n line endings — normalize before splitting
+		// Responses API SSE uses one JSON object per data line.
 		body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
 		body = bytes.ReplaceAll(body, []byte("\r"), []byte("\n"))
 		lines := bytes.Split(body, []byte("\n"))
@@ -678,63 +654,64 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 			}
 
 			var event struct {
-				Type    string `json:"type"`
-				Message struct {
+				Type     string `json:"type"`
+				Delta    string `json:"delta"`
+				Response struct {
 					Model string `json:"model"`
 					Usage struct {
-						InputTokens              int `json:"input_tokens"`
-						CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-						CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+						InputTokens  int `json:"input_tokens"`
+						OutputTokens int `json:"output_tokens"`
+						InputDetails struct {
+							CachedTokens     int `json:"cached_tokens"`
+							CacheWriteTokens int `json:"cache_write_tokens"`
+						} `json:"input_tokens_details"`
 					} `json:"usage"`
-				} `json:"message"`
-				Usage struct {
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage"`
-				Delta struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"delta"`
+				} `json:"response"`
 			}
 			if err := json.Unmarshal(data, &event); err != nil {
 				continue
 			}
 			switch event.Type {
-			case "message_start":
-				model = event.Message.Model
-				inputTokens = event.Message.Usage.InputTokens
-				cacheWrite = event.Message.Usage.CacheCreationInputTokens
-				cacheRead = event.Message.Usage.CacheReadInputTokens
-			case "message_delta":
-				outputTokens = event.Usage.OutputTokens
-			case "content_block_delta":
-				if event.Delta.Type == "text_delta" {
-					responseText.WriteString(event.Delta.Text)
-				}
+			case "response.completed", "response.incomplete", "response.failed":
+				model = event.Response.Model
+				inputTokens = event.Response.Usage.InputTokens
+				outputTokens = event.Response.Usage.OutputTokens
+				cacheRead = event.Response.Usage.InputDetails.CachedTokens
+				cacheWrite = event.Response.Usage.InputDetails.CacheWriteTokens
+			case "response.output_text.delta":
+				responseText.WriteString(event.Delta)
 			}
 		}
 	} else {
 		var resp struct {
-			Model   string `json:"model"`
+			Model string `json:"model"`
 			Usage struct {
-				InputTokens              int `json:"input_tokens"`
-				OutputTokens             int `json:"output_tokens"`
-				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+				InputDetails struct {
+					CachedTokens     int `json:"cached_tokens"`
+					CacheWriteTokens int `json:"cache_write_tokens"`
+				} `json:"input_tokens_details"`
 			} `json:"usage"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
+			Output []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"output"`
 		}
 		if err := json.Unmarshal(body, &resp); err == nil {
 			model = resp.Model
 			inputTokens = resp.Usage.InputTokens
 			outputTokens = resp.Usage.OutputTokens
-			cacheWrite = resp.Usage.CacheCreationInputTokens
-			cacheRead = resp.Usage.CacheReadInputTokens
-			for _, block := range resp.Content {
-				if block.Type == "text" {
-					responseText.WriteString(block.Text)
+			cacheWrite = resp.Usage.InputDetails.CacheWriteTokens
+			cacheRead = resp.Usage.InputDetails.CachedTokens
+			for _, item := range resp.Output {
+				for _, block := range item.Content {
+					if block.Type == "output_text" {
+						responseText.WriteString(block.Text)
+					}
 				}
 			}
 		}
@@ -903,10 +880,6 @@ func rewriteModel(body []byte, resolve func(string) string) []byte {
 	if err := json.Unmarshal(modelRaw, &model); err != nil || model == "" {
 		return body
 	}
-	// Strip display suffix like "[1m]" appended by Claude Code UI
-	if idx := strings.IndexByte(model, '['); idx != -1 {
-		model = model[:idx]
-	}
 	resolved := resolve(model)
 	if resolved == model {
 		return body
@@ -943,21 +916,27 @@ func estimateMonthlyCost(db *gorm.DB, userID uint, monthStart time.Time) float64
 }
 
 // estimateCostRow is a lightweight copy of the pricing logic from handlers/stats.go.
-var modelPricingProxy = map[string][2]float64{
-	"claude-opus-4":     {15.0, 75.0},
-	"claude-sonnet-4":   {3.0, 15.0},
-	"claude-haiku-4":    {0.80, 4.0},
-	"claude-3-5-sonnet": {3.0, 15.0},
-	"claude-3-5-haiku":  {0.80, 4.0},
-	"claude-3-opus":     {15.0, 75.0},
-	"claude-3-sonnet":   {3.0, 15.0},
-	"claude-3-haiku":    {0.25, 1.25},
+var modelPricingProxy = []struct {
+	name          string
+	input, output float64
+}{
+	{"gpt-5.6-sol", 4.0, 20.0},
+	{"gpt-5.3-codex", 1.75, 14.0},
+	{"gpt-5.4-pro", 30.0, 180.0},
+	{"gpt-5.2-pro", 21.0, 168.0},
+	{"gpt-5.4", 2.50, 15.0},
+	{"gpt-5.2", 1.75, 14.0},
+	{"gpt-5.1", 1.25, 10.0},
+	{"gpt-5-mini", 0.25, 2.0},
+	{"gpt-5-nano", 0.05, 0.40},
+	{"gpt-5", 1.25, 10.0},
+	{"gpt-4.1", 2.0, 8.0},
 }
 
 func estimateCostRow(model string, input, output int64) float64 {
-	for substr, price := range modelPricingProxy {
-		if strings.Contains(model, substr) {
-			return float64(input)/1_000_000*price[0] + float64(output)/1_000_000*price[1]
+	for _, price := range modelPricingProxy {
+		if strings.Contains(model, price.name) {
+			return float64(input)/1_000_000*price.input + float64(output)/1_000_000*price.output
 		}
 	}
 	return 0
@@ -968,11 +947,11 @@ func injectSystemPrompt(body []byte, prefix string) []byte {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return body
 	}
-	existing, _ := parsed["system"].(string)
+	existing, _ := parsed["instructions"].(string)
 	if existing != "" {
-		parsed["system"] = prefix + "\n\n" + existing
+		parsed["instructions"] = prefix + "\n\n" + existing
 	} else {
-		parsed["system"] = prefix
+		parsed["instructions"] = prefix
 	}
 	result, err := json.Marshal(parsed)
 	if err != nil {
@@ -984,5 +963,11 @@ func injectSystemPrompt(body []byte, prefix string) []byte {
 func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": msg,
+			"type":    "ourcodex_error",
+			"code":    code,
+		},
+	})
 }

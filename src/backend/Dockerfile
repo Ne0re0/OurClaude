@@ -27,9 +27,9 @@ COPY --from=frontend-builder /app/dist ./cmd/server/frontend/dist/
 # Build with prod tag so frontend is embedded
 RUN CGO_ENABLED=1 GOOS=linux go build -tags prod \
     -ldflags="-s -w" \
-    -o /claude-proxy ./cmd/server/
+    -o /codex-proxy ./cmd/server/
 
-# Cross-compile ourclaude client (no CGO needed)
+# Cross-compile ourcodex client (no CGO needed)
 # Set CLI_PLATFORMS to a comma-separated list to compile only specific targets.
 # Default: all. Example: CLI_PLATFORMS=linux-amd64
 ARG CLI_PLATFORMS=linux-amd64,linux-arm64,darwin-amd64,darwin-arm64,windows-amd64
@@ -37,7 +37,7 @@ RUN mkdir -p /dist && \
     for p in $(echo "$CLI_PLATFORMS" | tr ',' ' '); do \
       os=$(echo "$p" | cut -d- -f1); \
       arch=$(echo "$p" | cut -d- -f2); \
-      out="/dist/ourclaude-${p}"; \
+      out="/dist/ourcodex-${p}"; \
       [ "$os" = "windows" ] && out="${out}.exe"; \
       echo "Building ${out}..."; \
       GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -ldflags="-s -w" -o "$out" ./cmd/cl/; \
@@ -47,11 +47,11 @@ RUN mkdir -p /dist && \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget curl bash
 
-RUN mkdir -p /data /usr/local/share/cl
+RUN mkdir -p /data /usr/local/share/ourcodex
 
-COPY --from=go-builder /claude-proxy /usr/local/bin/claude-proxy
-COPY --from=go-builder /dist/ /usr/local/share/cl/
+COPY --from=go-builder /codex-proxy /usr/local/bin/codex-proxy
+COPY --from=go-builder /dist/ /usr/local/share/ourcodex/
 
 EXPOSE 3000 8080
 
-ENTRYPOINT ["/usr/local/bin/claude-proxy"]
+ENTRYPOINT ["/usr/local/bin/codex-proxy"]

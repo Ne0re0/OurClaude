@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -300,7 +300,7 @@ func parseID(r *http.Request) (uint, error) {
 	return uint(id), nil
 }
 
-// GetStats returns today/week/total usage stats + owned Claude accounts for a user.
+// GetStats returns today/week/total usage stats + owned Codex accounts for a user.
 func (h *UsersHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
@@ -333,7 +333,7 @@ func (h *UsersHandler) GetStats(w http.ResponseWriter, r *http.Request) {
 		return p
 	}
 
-	var accounts []database.ClaudeAccount
+	var accounts []database.CodexAccount
 	h.db.Where("owner_user_id = ?", id).Find(&accounts)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
-	"claude-proxy/internal/auth"
-	"claude-proxy/internal/config"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/middleware"
+	"codex-proxy/internal/auth"
+	"codex-proxy/internal/config"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/middleware"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"

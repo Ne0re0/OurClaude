@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/pool"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/pool"
 
 	"gorm.io/gorm"
 )
@@ -199,8 +199,8 @@ func (h *PoolsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	queryStats := func(since time.Time) periodStats {
 		var reqs, inp, out int64
 		h.db.Model(&database.UsageLog{}).
-			Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-			Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+			Joins("JOIN codex_accounts ON usage_logs.account_id = codex_accounts.id").
+			Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
 			Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", id, since).
 			Select("COUNT(*), COALESCE(SUM(usage_logs.input_tokens),0), COALESCE(SUM(usage_logs.output_tokens),0)").
 			Row().Scan(&reqs, &inp, &out)
@@ -214,10 +214,10 @@ func (h *PoolsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"pool":       p,
-		"today":      queryStats(today),
-		"week":       queryStats(weekAgo),
-		"month":      queryStats(monthStart),
+		"pool":  p,
+		"today": queryStats(today),
+		"week":  queryStats(weekAgo),
+		"month": queryStats(monthStart),
 	})
 }
 
@@ -239,7 +239,7 @@ func (h *PoolsHandler) Users(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, users)
 }
 
-// GET /api/admin/pools/{id}/quotas — average Anthropic quotas across accounts in this pool
+// GET /api/admin/pools/{id}/quotas — average OpenAI quotas across accounts in this pool
 func (h *PoolsHandler) Quotas(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
@@ -253,7 +253,7 @@ func (h *PoolsHandler) Quotas(w http.ResponseWriter, r *http.Request) {
 
 	if len(accountIDs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"count": 0, "avg_five_hour_pct": 0, "avg_seven_day_pct": 0, "quotas": []interface{}{},
+			"count": 0, "avg_primary_pct": 0, "avg_secondary_pct": 0, "quotas": []interface{}{},
 		})
 		return
 	}
@@ -261,10 +261,10 @@ func (h *PoolsHandler) Quotas(w http.ResponseWriter, r *http.Request) {
 	var quotas []database.AccountQuota
 	h.db.Where("account_id IN ?", accountIDs).Find(&quotas)
 
-	var sumFive, sumSeven int
+	var sumPrimary, sumSecondary float64
 	for _, q := range quotas {
-		sumFive += q.FiveHourPct
-		sumSeven += q.SevenDayPct
+		sumPrimary += q.PrimaryPct
+		sumSecondary += q.SecondaryPct
 	}
 	n := len(quotas)
 	if n == 0 {
@@ -273,8 +273,8 @@ func (h *PoolsHandler) Quotas(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"count":             len(quotas),
-		"avg_five_hour_pct": sumFive / n,
-		"avg_seven_day_pct": sumSeven / n,
+		"avg_primary_pct":   sumPrimary / float64(n),
+		"avg_secondary_pct": sumSecondary / float64(n),
 		"quotas":            quotas,
 	})
 }

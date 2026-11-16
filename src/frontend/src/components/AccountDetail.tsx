@@ -248,20 +248,14 @@ export default function AccountDetail() {
       {/* Quota bars (OAuth only) */}
       {isOAuth && quotaData && !quotaData.error && (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 space-y-4">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Claude.ai Quota</h2>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Codex Quota</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <QuotaBar label="5-hour usage" pct={quotaData.five_hour_pct} resets={quotaData.five_hour_resets} />
-            <QuotaBar label="7-day usage" pct={quotaData.seven_day_pct} resets={quotaData.seven_day_resets} />
-            {quotaData.opus_pct !== undefined && (
-              <QuotaBar label="Opus" pct={quotaData.opus_pct} resets={quotaData.opus_resets} />
-            )}
-            {quotaData.sonnet_pct !== undefined && (
-              <QuotaBar label="Sonnet" pct={quotaData.sonnet_pct} resets={quotaData.sonnet_resets} />
-            )}
+            <QuotaBar label={`Primary${quotaData.primary_window_minutes ? ` (${quotaData.primary_window_minutes}m)` : ''}`} pct={quotaData.primary_pct} resets={quotaData.primary_resets} />
+            <QuotaBar label={`Secondary${quotaData.secondary_window_minutes ? ` (${quotaData.secondary_window_minutes}m)` : ''}`} pct={quotaData.secondary_pct} resets={quotaData.secondary_resets} />
           </div>
-          {quotaData.extra_enabled && (
+          {quotaData.credits_has && (
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              Extra usage: {quotaData.extra_used ?? 0} / {quotaData.extra_limit ?? '?'}
+              Credits: {quotaData.credits_unlimited ? 'Unlimited' : quotaData.credits_balance || 'Available'}
             </p>
           )}
           <p className="text-xs text-gray-400 dark:text-gray-500">

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -20,16 +20,16 @@ import (
 
 // platforms maps platform identifiers to their binary filenames.
 var platforms = map[string]string{
-	"linux-amd64":   "ourclaude-linux-amd64",
-	"linux-arm64":   "ourclaude-linux-arm64",
-	"darwin-amd64":  "ourclaude-darwin-amd64",
-	"darwin-arm64":  "ourclaude-darwin-arm64",
-	"windows-amd64": "ourclaude-windows-amd64.exe",
+	"linux-amd64":   "ourcodex-linux-amd64",
+	"linux-arm64":   "ourcodex-linux-arm64",
+	"darwin-amd64":  "ourcodex-darwin-amd64",
+	"darwin-arm64":  "ourcodex-darwin-arm64",
+	"windows-amd64": "ourcodex-windows-amd64.exe",
 }
 
 // binarySentinel is the prefix we search for in the binary to embed a unique key.
-// The cl binary must contain the string "CLBINTOK:" followed by exactly 32 hex characters.
-const binarySentinel = "CLBINTOK:"
+// The client binary must contain this string followed by exactly 32 hex characters.
+const binarySentinel = "OCBINTOK:"
 const binaryKeyLen = 32
 
 type DownloadsHandler struct {
@@ -104,9 +104,9 @@ func (h *DownloadsHandler) AuthDownload(w http.ResponseWriter, r *http.Request) 
 	key := newBinaryKey()
 	patched := patchBinaryToken(data, key)
 
-	dlName := "ourclaude"
+	dlName := "ourcodex"
 	if strings.HasSuffix(filename, ".exe") {
-		dlName = "ourclaude.exe"
+		dlName = "ourcodex.exe"
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, dlName))
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -166,9 +166,9 @@ func (h *DownloadsHandler) PreAuthDownload(w http.ResponseWriter, r *http.Reques
 		})
 	}
 
-	dlName := "ourclaude"
+	dlName := "ourcodex"
 	if strings.HasSuffix(filename, ".exe") {
-		dlName = "ourclaude.exe"
+		dlName = "ourcodex.exe"
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, dlName))
 	w.Header().Set("Content-Type", "application/octet-stream")

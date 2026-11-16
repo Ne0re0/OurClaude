@@ -2,55 +2,69 @@ package oauth
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/database"
 
 	"gorm.io/gorm"
 )
 
-// claudeClientID is the public OAuth client ID used by the Claude CLI.
-const claudeClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+const DefaultClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 type Refresher struct {
 	client     *http.Client
 	refreshURL string
+	clientID   string
 	enc        *crypto.Encryptor
-	refreshMu  sync.Map // map[uint]*sync.Mutex
+	refreshMu  sync.Map
 }
 
-func New(refreshURL string, enc *crypto.Encryptor) *Refresher {
+func New(refreshURL, clientID string, enc *crypto.Encryptor) *Refresher {
+	if clientID == "" {
+		clientID = DefaultClientID
+	}
 	return &Refresher{
-		client:     &http.Client{Timeout: 30 * time.Second},
+		client:     &http.Client{Timeout: 45 * time.Second},
 		refreshURL: refreshURL,
+		clientID:   clientID,
 		enc:        enc,
 	}
 }
 
 type refreshResponse struct {
+	IDToken      string `json:"id_token"`
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
-	ExpiresAt    int64  `json:"expires_at"`
 }
 
-func (r *Refresher) RefreshToken(db *gorm.DB, account *database.ClaudeAccount) error {
-	body, _ := json.Marshal(map[string]string{
+// RefreshToken rotates one ChatGPT OAuth credential set. account must contain
+// plaintext tokens; the persisted values remain encrypted at rest.
+func (r *Refresher) RefreshToken(db *gorm.DB, account *database.CodexAccount) error {
+	body, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": account.RefreshToken,
-		"client_id":     claudeClientID,
+		"client_id":     firstNonEmpty(account.OAuthClientID, r.clientID),
 	})
+	if err != nil {
+		return err
+	}
 
-	req, err := http.NewRequest("POST", r.refreshURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, refreshEndpoint(account.OAuthIssuer, r.refreshURL), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -58,90 +72,181 @@ func (r *Refresher) RefreshToken(db *gorm.DB, account *database.ClaudeAccount) e
 	}
 	defer resp.Body.Close()
 
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("refresh failed with status %d", resp.StatusCode)
+		return fmt.Errorf("refresh failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
 
 	var result refreshResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(responseBody, &result); err != nil {
 		return err
 	}
-
 	if result.AccessToken == "" {
 		return fmt.Errorf("no access token in refresh response")
 	}
 
-	var expiresAt time.Time
-	if result.ExpiresAt > 0 {
-		// milliseconds timestamp
-		expiresAt = time.UnixMilli(result.ExpiresAt)
-	} else if result.ExpiresIn > 0 {
+	refreshToken := firstNonEmpty(result.RefreshToken, account.RefreshToken)
+	idToken := firstNonEmpty(result.IDToken, account.IDToken)
+	expiresAt := TokenExpiresAt(result.AccessToken)
+	if expiresAt.IsZero() && result.ExpiresIn > 0 {
 		expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-	} else {
-		expiresAt = time.Now().Add(1 * time.Hour)
+	}
+	if expiresAt.IsZero() {
+		expiresAt = time.Now().Add(time.Hour)
 	}
 
-	// Encrypt new tokens
 	encAccess, err := r.enc.Encrypt(result.AccessToken)
 	if err != nil {
 		return err
 	}
-
-	var encRefresh string
-	if result.RefreshToken != "" {
-		encRefresh, err = r.enc.Encrypt(result.RefreshToken)
-		if err != nil {
-			return err
-		}
-	} else {
-		encRefresh = account.RefreshToken // keep existing (already encrypted in DB)
+	encRefresh, err := r.enc.Encrypt(refreshToken)
+	if err != nil {
+		return err
+	}
+	encID, err := r.enc.Encrypt(idToken)
+	if err != nil {
+		return err
 	}
 
+	accountID := firstNonEmpty(AccountIDFromJWT(result.AccessToken), AccountIDFromJWT(idToken), account.ChatGPTAccountID)
 	now := time.Now()
 	updates := map[string]interface{}{
-		"access_token":  encAccess,
-		"refresh_token": encRefresh,
-		"expires_at":    expiresAt,
-		"status":        "active",
-		"last_error":    "",
-		"last_used_at":  now,
+		"access_token":        encAccess,
+		"refresh_token":       encRefresh,
+		"refresh_token_hash":  RefreshTokenHash(refreshToken),
+		"id_token":            encID,
+		"chat_gpt_account_id": accountID,
+		"expires_at":          expiresAt,
+		"status":              "active",
+		"last_error":          "",
+		"last_used_at":        now,
 	}
 	if err := db.Model(account).Updates(updates).Error; err != nil {
 		return err
 	}
 
-	// Update in-memory account for immediate use
 	account.AccessToken = result.AccessToken
-	if result.RefreshToken != "" {
-		account.RefreshToken = result.RefreshToken
-	}
+	account.RefreshToken = refreshToken
+	account.RefreshTokenHash = RefreshTokenHash(refreshToken)
+	account.IDToken = idToken
+	account.ChatGPTAccountID = accountID
 	account.ExpiresAt = expiresAt
 	account.Status = "active"
 	account.LastUsedAt = &now
-
 	return nil
 }
 
-// EnsureValid refreshes the token if it expires within 5 minutes.
-// Returns the account with a decrypted, valid access token.
-func (r *Refresher) EnsureValid(db *gorm.DB, account *database.ClaudeAccount) error {
+// EnsureValid refreshes a token that expires within five minutes.
+func (r *Refresher) EnsureValid(db *gorm.DB, account *database.CodexAccount) error {
 	if time.Until(account.ExpiresAt) > 5*time.Minute {
 		return nil
 	}
 
-	// Per-account lock to prevent concurrent refresh
-	val, _ := r.refreshMu.LoadOrStore(account.ID, &sync.Mutex{})
-	mu := val.(*sync.Mutex)
+	value, _ := r.refreshMu.LoadOrStore(account.ID, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Re-check after acquiring lock (another goroutine may have refreshed)
-	if err := db.First(account, account.ID).Error; err != nil {
+	var stored database.CodexAccount
+	if err := db.First(&stored, account.ID).Error; err != nil {
 		return err
 	}
-	if time.Until(account.ExpiresAt) > 5*time.Minute {
+	if time.Until(stored.ExpiresAt) > 5*time.Minute {
+		return r.decryptInto(&stored, account)
+	}
+	if err := r.decryptInto(&stored, account); err != nil {
+		return err
+	}
+	return r.RefreshToken(db, account)
+}
+
+func (r *Refresher) decryptInto(stored, target *database.CodexAccount) error {
+	access, err := r.enc.Decrypt(stored.AccessToken)
+	if err != nil {
+		return err
+	}
+	refresh, err := r.enc.Decrypt(stored.RefreshToken)
+	if err != nil {
+		return err
+	}
+	idToken := ""
+	if stored.IDToken != "" {
+		idToken, err = r.enc.Decrypt(stored.IDToken)
+		if err != nil {
+			return err
+		}
+	}
+	*target = *stored
+	target.AccessToken = access
+	target.RefreshToken = refresh
+	target.IDToken = idToken
+	return nil
+}
+
+func refreshEndpoint(issuer, fallback string) string {
+	if strings.TrimSpace(issuer) == "" {
+		return fallback
+	}
+	return strings.TrimRight(issuer, "/") + "/oauth/token"
+}
+
+func RefreshTokenHash(token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+}
+
+func TokenExpiresAt(token string) time.Time {
+	claims := jwtClaims(token)
+	if exp, ok := numberClaim(claims, "exp"); ok {
+		return time.Unix(exp, 0)
+	}
+	return time.Time{}
+}
+
+func AccountIDFromJWT(token string) string {
+	claims := jwtClaims(token)
+	if value, ok := claims["chatgpt_account_id"].(string); ok {
+		return value
+	}
+	if auth, ok := claims["https://api.openai.com/auth"].(map[string]interface{}); ok {
+		if value, ok := auth["chatgpt_account_id"].(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func jwtClaims(token string) map[string]interface{} {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
 		return nil
 	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]interface{}
+	if json.Unmarshal(payload, &claims) != nil {
+		return nil
+	}
+	return claims
+}
 
-	return r.RefreshToken(db, account)
+func numberClaim(claims map[string]interface{}, key string) (int64, bool) {
+	if claims == nil {
+		return 0, false
+	}
+	value, ok := claims[key].(float64)
+	return int64(value), ok
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

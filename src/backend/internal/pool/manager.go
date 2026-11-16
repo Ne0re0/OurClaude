@@ -6,13 +6,14 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/database"
-	"claude-proxy/internal/oauth"
-	"claude-proxy/internal/webhook"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/oauth"
+	"codex-proxy/internal/webhook"
 
 	"gorm.io/gorm"
 )
@@ -45,7 +46,7 @@ func New(db *gorm.DB, oauthRefresher *oauth.Refresher, enc *crypto.Encryptor, we
 
 // StartHealthCheck periodically tests every account and marks unhealthy ones.
 // It performs a lightweight HEAD/GET to the upstream to verify token validity.
-func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, upstreamURL string) {
+func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, apiURL, chatGPTURL string) {
 	if interval <= 0 {
 		return
 	}
@@ -58,7 +59,7 @@ func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				var accounts []database.ClaudeAccount
+				var accounts []database.CodexAccount
 				if err := m.db.Where("status = ?", "active").Find(&accounts).Error; err != nil {
 					log.Printf("pool health-check: failed to list accounts: %v", err)
 					continue
@@ -67,12 +68,24 @@ func (m *Manager) StartHealthCheck(ctx context.Context, interval time.Duration, 
 					if err := m.decryptAccount(&acc); err != nil {
 						continue
 					}
-					// Test by calling the models list endpoint — cheap, no tokens consumed.
-					req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL+"/v1/models", nil)
+					if acc.AccountType != "apikey" {
+						if err := m.oauth.EnsureValid(m.db, &acc); err != nil {
+							m.MarkError(acc.ID, "health-check refresh: "+err.Error())
+							continue
+						}
+					}
+					upstreamURL := apiURL
+					if acc.AccountType != "apikey" {
+						upstreamURL = chatGPTURL
+					}
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(upstreamURL, "/")+"/models", nil)
 					if err != nil {
 						continue
 					}
 					req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+					if acc.AccountType != "apikey" && acc.ChatGPTAccountID != "" {
+						req.Header.Set("ChatGPT-Account-ID", acc.ChatGPTAccountID)
+					}
 					client := &http.Client{Timeout: 10 * time.Second}
 					resp, err := client.Do(req)
 					if err != nil {
@@ -128,13 +141,13 @@ func (m *Manager) StartAutoReset(ctx context.Context, interval time.Duration) {
 // It picks the pool with the lowest total token usage today, then applies
 // round-robin within that pool. Falls back to single-pool behaviour if only
 // one pool is provided.
-func (m *Manager) GetAccountForUser(poolIDs []uint) (*database.ClaudeAccount, error) {
+func (m *Manager) GetAccountForUser(poolIDs []uint) (*database.CodexAccount, error) {
 	return m.GetAccountForUserExcluding(poolIDs, nil)
 }
 
 // GetAccountForUserExcluding selects the best account while skipping accounts
 // already attempted for the current proxy request.
-func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
+func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]struct{}) (*database.CodexAccount, error) {
 	if len(poolIDs) == 0 {
 		return nil, ErrNoActiveAccounts
 	}
@@ -152,8 +165,8 @@ func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]s
 	for _, pid := range poolIDs {
 		var usage int64
 		m.db.Model(&database.UsageLog{}).
-			Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-			Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+			Joins("JOIN codex_accounts ON usage_logs.account_id = codex_accounts.id").
+			Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
 			Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", pid, today).
 			Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
 			Row().Scan(&usage)
@@ -176,16 +189,16 @@ func (m *Manager) GetAccountForUserExcluding(poolIDs []uint, excluded map[uint]s
 
 // GetAccountForPool returns the next active account for the given pool.
 // Priority: active OAuth → active API keys (fallback) → exhausted OAuth (last resort).
-func (m *Manager) GetAccountForPool(poolID uint) (*database.ClaudeAccount, error) {
+func (m *Manager) GetAccountForPool(poolID uint) (*database.CodexAccount, error) {
 	return m.GetAccountForPoolExcluding(poolID, nil)
 }
 
 // GetAccountForPoolExcluding is GetAccountForPool with a per-request exclusion
 // set, used to ensure a retry actually moves to another account.
-func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]struct{}) (*database.ClaudeAccount, error) {
-	var accounts []database.ClaudeAccount
-	if err := m.db.Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
-		Where("account_pools.pool_id = ? AND claude_accounts.status != ?", poolID, "error").
+func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]struct{}) (*database.CodexAccount, error) {
+	var accounts []database.CodexAccount
+	if err := m.db.Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
+		Where("account_pools.pool_id = ? AND codex_accounts.status != ?", poolID, "error").
 		Find(&accounts).Error; err != nil {
 		return nil, err
 	}
@@ -210,9 +223,9 @@ func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]stru
 	}
 
 	// 4. Final fallback: error OAuth accounts (try to recover)
-	var errorAccounts []database.ClaudeAccount
-	m.db.Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
-		Where("account_pools.pool_id = ? AND claude_accounts.status = ? AND claude_accounts.account_type = ?", poolID, "error", "oauth").
+	var errorAccounts []database.CodexAccount
+	m.db.Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").
+		Where("account_pools.pool_id = ? AND codex_accounts.status = ? AND codex_accounts.account_type = ?", poolID, "error", "oauth").
 		Find(&errorAccounts)
 	errorAccounts = filterExcluded(errorAccounts, excluded)
 	if len(errorAccounts) > 0 {
@@ -222,7 +235,7 @@ func (m *Manager) GetAccountForPoolExcluding(poolID uint, excluded map[uint]stru
 	return nil, ErrNoActiveAccounts
 }
 
-func (m *Manager) pickAndValidate(poolID uint, candidates []database.ClaudeAccount) (*database.ClaudeAccount, error) {
+func (m *Manager) pickAndValidate(poolID uint, candidates []database.CodexAccount) (*database.CodexAccount, error) {
 	m.mu.Lock()
 	idx := m.roundRobin[poolID] % len(candidates)
 	m.roundRobin[poolID] = (idx + 1) % len(candidates)
@@ -246,7 +259,7 @@ func (m *Manager) pickAndValidate(poolID uint, candidates []database.ClaudeAccou
 
 // pickAndValidateSoft is like pickAndValidate but doesn't mark accounts as error on failure.
 // Used for last-resort exhausted accounts to avoid permanently locking out the only account.
-func (m *Manager) pickAndValidateSoft(poolID uint, candidates []database.ClaudeAccount) (*database.ClaudeAccount, error) {
+func (m *Manager) pickAndValidateSoft(poolID uint, candidates []database.CodexAccount) (*database.CodexAccount, error) {
 	m.mu.Lock()
 	idx := m.roundRobin[poolID] % len(candidates)
 	m.roundRobin[poolID] = (idx + 1) % len(candidates)
@@ -269,11 +282,11 @@ func (m *Manager) pickAndValidateSoft(poolID uint, candidates []database.ClaudeA
 }
 
 // scoredPick selects the best OAuth account based on quota data.
-// Accounts closer to their 5-hour reset window with usage below 95% are
+// Accounts closer to their primary reset window with usage below 95% are
 // prioritised so their remaining capacity is drained before the reset.
-func (m *Manager) scoredPick(candidates []database.ClaudeAccount) (*database.ClaudeAccount, error) {
+func (m *Manager) scoredPick(candidates []database.CodexAccount) (*database.CodexAccount, error) {
 	type scored struct {
-		account database.ClaudeAccount
+		account database.CodexAccount
 		score   float64
 	}
 
@@ -282,14 +295,14 @@ func (m *Manager) scoredPick(candidates []database.ClaudeAccount) (*database.Cla
 		var q database.AccountQuota
 		score := 50.0 // default if no quota data
 		if m.db.Where("account_id = ?", acc.ID).First(&q).Error == nil {
-			score = float64(q.FiveHourPct)
+			score = q.PrimaryPct
 			// Drain mode: if reset is imminent and usage below 95%, prioritize it
-			if q.FiveHourResets != "" {
-				if t, err := time.Parse(time.RFC3339, q.FiveHourResets); err == nil {
+			if q.PrimaryResets != "" {
+				if t, err := time.Parse(time.RFC3339, q.PrimaryResets); err == nil {
 					minutesUntilReset := time.Until(t).Minutes()
-					if minutesUntilReset > 0 && minutesUntilReset < 30 && q.FiveHourPct < 95 {
+					if minutesUntilReset > 0 && minutesUntilReset < 30 && q.PrimaryPct < 95 {
 						score *= 0.2 // Heavy bonus — drain this account first
-					} else if minutesUntilReset > 0 && minutesUntilReset < 60 && q.FiveHourPct < 95 {
+					} else if minutesUntilReset > 0 && minutesUntilReset < 60 && q.PrimaryPct < 95 {
 						score *= 0.5 // Moderate bonus
 					}
 				}
@@ -318,7 +331,7 @@ func (m *Manager) scoredPick(candidates []database.ClaudeAccount) (*database.Cla
 }
 
 func (m *Manager) MarkExhausted(accountID uint) {
-	m.db.Model(&database.ClaudeAccount{}).
+	m.db.Model(&database.CodexAccount{}).
 		Where("id = ?", accountID).
 		Updates(map[string]interface{}{"status": "exhausted"})
 
@@ -330,7 +343,7 @@ func (m *Manager) MarkExhausted(accountID uint) {
 }
 
 func (m *Manager) MarkError(accountID uint, errMsg string) {
-	m.db.Model(&database.ClaudeAccount{}).
+	m.db.Model(&database.CodexAccount{}).
 		Where("id = ?", accountID).
 		Updates(map[string]interface{}{
 			"status":     "error",
@@ -346,7 +359,7 @@ func (m *Manager) MarkError(accountID uint, errMsg string) {
 }
 
 func (m *Manager) ResetPool(poolID uint) error {
-	return m.db.Model(&database.ClaudeAccount{}).
+	return m.db.Model(&database.CodexAccount{}).
 		Where("id IN (SELECT account_id FROM account_pools WHERE pool_id = ?) AND status = ?", poolID, "exhausted").
 		Updates(map[string]interface{}{
 			"status":     "active",
@@ -355,7 +368,7 @@ func (m *Manager) ResetPool(poolID uint) error {
 }
 
 func (m *Manager) ResetAccount(accountID uint) error {
-	return m.db.Model(&database.ClaudeAccount{}).
+	return m.db.Model(&database.CodexAccount{}).
 		Where("id = ?", accountID).
 		Updates(map[string]interface{}{
 			"status":     "active",
@@ -365,12 +378,12 @@ func (m *Manager) ResetAccount(accountID uint) error {
 
 func (m *Manager) UpdateLastUsed(accountID uint) {
 	now := time.Now()
-	m.db.Model(&database.ClaudeAccount{}).
+	m.db.Model(&database.CodexAccount{}).
 		Where("id = ?", accountID).
 		Update("last_used_at", now)
 }
 
-func (m *Manager) decryptAccount(account *database.ClaudeAccount) error {
+func (m *Manager) decryptAccount(account *database.CodexAccount) error {
 	access, err := m.enc.Decrypt(account.AccessToken)
 	if err != nil {
 		return err
@@ -381,11 +394,18 @@ func (m *Manager) decryptAccount(account *database.ClaudeAccount) error {
 	}
 	account.AccessToken = access
 	account.RefreshToken = refresh
+	if account.IDToken != "" {
+		idToken, err := m.enc.Decrypt(account.IDToken)
+		if err != nil {
+			return err
+		}
+		account.IDToken = idToken
+	}
 	return nil
 }
 
-func filterByStatus(accounts []database.ClaudeAccount, status string) []database.ClaudeAccount {
-	var result []database.ClaudeAccount
+func filterByStatus(accounts []database.CodexAccount, status string) []database.CodexAccount {
+	var result []database.CodexAccount
 	for _, a := range accounts {
 		if a.Status == status {
 			result = append(result, a)
@@ -394,8 +414,8 @@ func filterByStatus(accounts []database.ClaudeAccount, status string) []database
 	return result
 }
 
-func filterByTypeAndStatus(accounts []database.ClaudeAccount, accountType, status string) []database.ClaudeAccount {
-	var result []database.ClaudeAccount
+func filterByTypeAndStatus(accounts []database.CodexAccount, accountType, status string) []database.CodexAccount {
+	var result []database.CodexAccount
 	for _, a := range accounts {
 		t := a.AccountType
 		if t == "" {
@@ -408,11 +428,11 @@ func filterByTypeAndStatus(accounts []database.ClaudeAccount, accountType, statu
 	return result
 }
 
-func filterExcluded(accounts []database.ClaudeAccount, excluded map[uint]struct{}) []database.ClaudeAccount {
+func filterExcluded(accounts []database.CodexAccount, excluded map[uint]struct{}) []database.CodexAccount {
 	if len(excluded) == 0 {
 		return accounts
 	}
-	result := make([]database.ClaudeAccount, 0, len(accounts))
+	result := make([]database.CodexAccount, 0, len(accounts))
 	for _, account := range accounts {
 		if _, skip := excluded[account.ID]; !skip {
 			result = append(result, account)

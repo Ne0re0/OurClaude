@@ -238,7 +238,7 @@ export const mcpApi = {
   delete: (id: number) => del(`/admin/mcp-servers/${id}`),
 }
 
-// Anthropic Quotas
+// OpenAI Quotas
 export const quotasApi = {
   all:       () => get<AccountQuotaWithInfo[]>('/admin/quotas'),
   account:   (id: number) => get<AccountQuotaData>(`/admin/accounts/${id}/quota`),
@@ -249,17 +249,15 @@ export const quotasApi = {
 export interface AccountQuotaData {
   id: number
   account_id: number
-  five_hour_pct: number
-  five_hour_resets: string
-  seven_day_pct: number
-  seven_day_resets: string
-  opus_pct?: number
-  opus_resets?: string
-  sonnet_pct?: number
-  sonnet_resets?: string
-  extra_enabled: boolean
-  extra_limit?: number
-  extra_used?: number
+  primary_pct: number
+  primary_window_minutes?: number
+  primary_resets?: string
+  secondary_pct: number
+  secondary_window_minutes?: number
+  secondary_resets?: string
+  credits_has: boolean
+  credits_unlimited: boolean
+  credits_balance?: string
   error?: string
   updated_at: string
 }
@@ -273,8 +271,8 @@ export interface AccountQuotaWithInfo extends AccountQuotaData {
 
 export interface PoolQuotaAgg {
   count: number
-  avg_five_hour_pct: number
-  avg_seven_day_pct: number
+  avg_primary_pct: number
+  avg_secondary_pct: number
   quotas: AccountQuotaData[]
 }
 

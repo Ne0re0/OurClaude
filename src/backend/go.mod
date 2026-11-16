@@ -1,4 +1,4 @@
-module claude-proxy
+module codex-proxy
 
 go 1.25.0
 

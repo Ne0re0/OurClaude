@@ -45,7 +45,7 @@ function StatusIcon({ pct }: { pct: number }) {
 }
 
 function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
-  const maxPct = Math.max(q.five_hour_pct, q.seven_day_pct, q.opus_pct ?? 0, q.sonnet_pct ?? 0)
+  const maxPct = Math.max(q.primary_pct, q.secondary_pct)
 
   return (
     <div className={`bg-white dark:bg-gray-800 rounded-xl border p-5 transition-colors ${
@@ -81,19 +81,13 @@ function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
         </div>
       ) : (
         <div className="space-y-3">
-          <UsageBar label="Session (5h)" pct={q.five_hour_pct} resets={q.five_hour_resets} />
-          <UsageBar label="Weekly (7d)" pct={q.seven_day_pct} resets={q.seven_day_resets} />
-          {q.opus_pct != null && (
-            <UsageBar label="Opus (7d)" pct={q.opus_pct} resets={q.opus_resets} color={q.opus_pct >= 90 ? 'bg-red-500' : 'bg-purple-500'} />
-          )}
-          {q.sonnet_pct != null && (
-            <UsageBar label="Sonnet (7d)" pct={q.sonnet_pct} resets={q.sonnet_resets} color={q.sonnet_pct >= 90 ? 'bg-red-500' : 'bg-indigo-500'} />
-          )}
-          {q.extra_enabled && q.extra_limit != null && q.extra_used != null && (
+          <UsageBar label={`Primary${q.primary_window_minutes ? ` (${q.primary_window_minutes}m)` : ''}`} pct={q.primary_pct} resets={q.primary_resets} />
+          <UsageBar label={`Secondary${q.secondary_window_minutes ? ` (${q.secondary_window_minutes}m)` : ''}`} pct={q.secondary_pct} resets={q.secondary_resets} />
+          {q.credits_has && (
             <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
               <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                <span>Extra credits</span>
-                <span>${q.extra_used?.toFixed(2)} / ${q.extra_limit?.toFixed(2)}</span>
+                <span>Credits</span>
+                <span>{q.credits_unlimited ? 'Unlimited' : q.credits_balance || 'Available'}</span>
               </div>
             </div>
           )}
@@ -105,7 +99,7 @@ function AccountQuotaCard({ q }: { q: AccountQuotaWithInfo }) {
           const updated = new Date(q.updated_at)
           const ageMs = Date.now() - updated.getTime()
           if (updated.getFullYear() <= 1970 || ageMs < 0) {
-            return <>No data yet — waiting for next poll</>
+            return <>No data yet — waiting for the next proxied response</>
           }
           const ageHours = Math.floor(ageMs / 3600000)
           const ageMins = Math.floor(ageMs / 60000)
@@ -131,7 +125,7 @@ export default function Quotas() {
   const [poolFilter, setPoolFilter] = useState<string>('')
 
   const { data: quotas = [], isLoading } = useQuery({
-    queryKey: ['anthropic-quotas'],
+    queryKey: ['openai-quotas'],
     queryFn: quotasApi.all,
     refetchInterval: 60_000,
   })
@@ -142,7 +136,7 @@ export default function Quotas() {
   const qc = useQueryClient()
   const refreshMutation = useMutation({
     mutationFn: quotasApi.refresh,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['anthropic-quotas'] }); toast('Quota refresh triggered', true) },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['openai-quotas'] }); toast('Quota refresh triggered', true) },
     onError: (e: Error) => toast('Refresh failed: ' + e.message, false),
   })
 
@@ -152,7 +146,7 @@ export default function Quotas() {
       const inPool = (q.pools ?? []).some(p => String(p.id) === poolFilter)
       if (!inPool) return false
     }
-    const maxPct = Math.max(q.five_hour_pct, q.seven_day_pct, q.opus_pct ?? 0, q.sonnet_pct ?? 0)
+    const maxPct = Math.max(q.primary_pct, q.secondary_pct)
     if (filter === 'critical') return maxPct >= 90
     if (filter === 'warning') return maxPct >= 70 && maxPct < 90
     if (filter === 'healthy') return maxPct < 70
@@ -160,17 +154,17 @@ export default function Quotas() {
   })
 
   // Summary stats
-  const critical = quotas.filter(q => Math.max(q.five_hour_pct, q.seven_day_pct) >= 90).length
-  const warning = quotas.filter(q => { const m = Math.max(q.five_hour_pct, q.seven_day_pct); return m >= 70 && m < 90 }).length
-  const healthy = quotas.filter(q => Math.max(q.five_hour_pct, q.seven_day_pct) < 70).length
+  const critical = quotas.filter(q => Math.max(q.primary_pct, q.secondary_pct) >= 90).length
+  const warning = quotas.filter(q => { const m = Math.max(q.primary_pct, q.secondary_pct); return m >= 70 && m < 90 }).length
+  const healthy = quotas.filter(q => Math.max(q.primary_pct, q.secondary_pct) < 70).length
   const errored = quotas.filter(q => q.error).length
 
   // Pool averages
   const poolAverages = pools.map(p => {
     const poolQuotas = quotas.filter(q => (q.pools ?? []).some(pp => pp.id === p.id))
     if (poolQuotas.length === 0) return { pool: p, avgFive: 0, avgSeven: 0, count: 0 }
-    const avgFive = Math.round(poolQuotas.reduce((s, q) => s + q.five_hour_pct, 0) / poolQuotas.length)
-    const avgSeven = Math.round(poolQuotas.reduce((s, q) => s + q.seven_day_pct, 0) / poolQuotas.length)
+    const avgFive = Math.round(poolQuotas.reduce((s, q) => s + q.primary_pct, 0) / poolQuotas.length)
+    const avgSeven = Math.round(poolQuotas.reduce((s, q) => s + q.secondary_pct, 0) / poolQuotas.length)
     return { pool: p, avgFive, avgSeven, count: poolQuotas.length }
   }).filter(p => p.count > 0)
 
@@ -190,9 +184,9 @@ export default function Quotas() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Anthropic Quotas</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">OpenAI Quotas</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Real-time usage quotas from Anthropic — session limits, weekly limits, per-model caps.
+            Rate-limit snapshots observed on real Codex responses.
           </p>
         </div>
         <button
@@ -284,12 +278,12 @@ export default function Quotas() {
       {/* Account cards */}
       {filtered.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-8 text-center text-gray-400">
-          {quotas.length === 0 ? 'No quota data yet — the poller will fetch data shortly.' : 'No accounts match the current filter.'}
+          {quotas.length === 0 ? 'No quota data yet — send a Codex request through the proxy first.' : 'No accounts match the current filter.'}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered
-            .sort((a, b) => Math.max(b.five_hour_pct, b.seven_day_pct) - Math.max(a.five_hour_pct, a.seven_day_pct))
+            .sort((a, b) => Math.max(b.primary_pct, b.secondary_pct) - Math.max(a.primary_pct, a.secondary_pct))
             .map(q => <AccountQuotaCard key={q.account_id} q={q} />)}
         </div>
       )}

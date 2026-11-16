@@ -48,7 +48,7 @@ func New(dbType, path, dsn string) (*gorm.DB, error) {
 	err = db.AutoMigrate(
 		&Admin{},
 		&Pool{},
-		&ClaudeAccount{},
+		&CodexAccount{},
 		&User{},
 		&UsageLog{},
 		&WebhookConfig{},

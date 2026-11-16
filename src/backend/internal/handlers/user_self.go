@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,11 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"claude-proxy/internal/crypto"
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/crypto"
+	"codex-proxy/internal/database"
+	"codex-proxy/internal/oauth"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var errInvalidToken = errors.New("invalid token")
@@ -141,11 +142,11 @@ func (h *UserSelfHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	platformFiles := map[string]string{
-		"linux-amd64":   "ourclaude-linux-amd64",
-		"linux-arm64":   "ourclaude-linux-arm64",
-		"darwin-amd64":  "ourclaude-darwin-amd64",
-		"darwin-arm64":  "ourclaude-darwin-arm64",
-		"windows-amd64": "ourclaude-windows-amd64.exe",
+		"linux-amd64":   "ourcodex-linux-amd64",
+		"linux-arm64":   "ourcodex-linux-arm64",
+		"darwin-amd64":  "ourcodex-darwin-amd64",
+		"darwin-arm64":  "ourcodex-darwin-arm64",
+		"windows-amd64": "ourcodex-windows-amd64.exe",
 	}
 	filename, ok := platformFiles[platform]
 	if !ok {
@@ -196,7 +197,7 @@ func (h *UserSelfHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/user/import-account
-// Imports ~/.claude/.credentials.json content into the proxy as a ClaudeAccount
+// Imports ~/.codex/auth.json content into the proxy as a CodexAccount
 // owned by this user. If an owned account already exists, it is updated.
 func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) {
 	if h.enc == nil {
@@ -218,20 +219,9 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Parse the Claude credentials format
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
-			ExpiresAt    int64  `json:"expiresAt"` // milliseconds
-		} `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal([]byte(req.CredentialsJSON), &creds); err != nil {
-		writeJSON(w, http.StatusBadRequest, errResp("invalid credentials JSON format"))
-		return
-	}
-	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.RefreshToken == "" {
-		writeJSON(w, http.StatusBadRequest, errResp("credentials must contain claudeAiOauth.accessToken and refreshToken"))
+	creds, err := oauth.ParseAuthJSON([]byte(req.CredentialsJSON))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp(err.Error()))
 		return
 	}
 
@@ -250,30 +240,29 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		poolID = anyPool.ID
 	}
 
-	var expiresAt time.Time
-	if creds.ClaudeAiOauth.ExpiresAt > 0 {
-		expiresAt = time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-	} else {
-		expiresAt = time.Now().Add(1 * time.Hour)
-	}
-
-	encAccess, err := h.enc.Encrypt(creds.ClaudeAiOauth.AccessToken)
+	encAccess, err := h.enc.Encrypt(creds.AccessToken)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to encrypt access token"))
 		return
 	}
-	encRefresh, err := h.enc.Encrypt(creds.ClaudeAiOauth.RefreshToken)
+	encRefresh, err := h.enc.Encrypt(creds.RefreshToken)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to encrypt refresh token"))
 		return
 	}
 
-	// Dedup: check by refresh token hash first, then by owner_user_id
-	rtHash := fmt.Sprintf("%x", sha256.Sum256([]byte(creds.ClaudeAiOauth.RefreshToken)))
+	encID, err := h.enc.Encrypt(creds.IDToken)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to encrypt ID token"))
+		return
+	}
 
-	var existing database.ClaudeAccount
+	// Dedup by rotating refresh token, stable ChatGPT account, then owner.
+	rtHash := oauth.RefreshTokenHash(creds.RefreshToken)
+
+	var existing database.CodexAccount
 	found := false
-	if err := h.db.Where("refresh_token_hash = ?", rtHash).First(&existing).Error; err == nil {
+	if err := h.db.Where("refresh_token_hash = ? OR chat_gpt_account_id = ?", rtHash, creds.AccountID).First(&existing).Error; err == nil {
 		found = true
 	} else if err := h.db.Where("owner_user_id = ?", user.ID).First(&existing).Error; err == nil {
 		found = true
@@ -281,14 +270,20 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 
 	if found {
 		h.db.Model(&existing).Updates(map[string]interface{}{
-			"access_token":      encAccess,
-			"refresh_token":     encRefresh,
-			"refresh_token_hash": rtHash,
-			"expires_at":        expiresAt,
-			"status":            "active",
-			"last_error":        "",
-			"owner_user_id":     user.ID,
+			"access_token":         encAccess,
+			"refresh_token":        encRefresh,
+			"refresh_token_hash":   rtHash,
+			"id_token":             encID,
+			"chat_gpt_account_id":  creds.AccountID,
+			"oauth_issuer":         creds.Issuer,
+			"oauth_client_id":      creds.ClientID,
+			"oauth_login_owner_id": creds.LoginOwnerID,
+			"expires_at":           creds.ExpiresAt,
+			"status":               "active",
+			"last_error":           "",
+			"owner_user_id":        user.ID,
 		})
+		h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&database.AccountPool{AccountID: existing.ID, PoolID: poolID})
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"message":    "account updated",
 			"account_id": existing.ID,
@@ -296,14 +291,20 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	account := database.ClaudeAccount{
-		Name:             user.Name + " (personal)",
-		AccessToken:      encAccess,
-		RefreshToken:     encRefresh,
-		RefreshTokenHash: rtHash,
-		ExpiresAt:        expiresAt,
-		Status:           "active",
-		OwnerUserID:      &user.ID,
+	account := database.CodexAccount{
+		Name:              user.Name + " (personal)",
+		AccessToken:       encAccess,
+		RefreshToken:      encRefresh,
+		RefreshTokenHash:  rtHash,
+		IDToken:           encID,
+		ChatGPTAccountID:  creds.AccountID,
+		OAuthIssuer:       creds.Issuer,
+		OAuthClientID:     creds.ClientID,
+		OAuthLoginOwnerID: creds.LoginOwnerID,
+		ExpiresAt:         creds.ExpiresAt,
+		AccountType:       "oauth",
+		Status:            "active",
+		OwnerUserID:       &user.ID,
 	}
 	if err := h.db.Create(&account).Error; err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to create account"))
@@ -327,7 +328,7 @@ func (h *UserSelfHandler) DeleteOwnedAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.Where("owner_user_id = ?", user.ID).First(&account).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("no owned account"))
 		return
@@ -368,9 +369,9 @@ func (h *UserSelfHandler) PoolStatus(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var active, exhausted, errCount int64
-		h.db.Model(&database.ClaudeAccount{}).Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").Where("account_pools.pool_id = ? AND claude_accounts.status = ?", pid, "active").Count(&active)
-		h.db.Model(&database.ClaudeAccount{}).Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").Where("account_pools.pool_id = ? AND claude_accounts.status = ?", pid, "exhausted").Count(&exhausted)
-		h.db.Model(&database.ClaudeAccount{}).Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").Where("account_pools.pool_id = ? AND claude_accounts.status = ?", pid, "error").Count(&errCount)
+		h.db.Model(&database.CodexAccount{}).Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").Where("account_pools.pool_id = ? AND codex_accounts.status = ?", pid, "active").Count(&active)
+		h.db.Model(&database.CodexAccount{}).Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").Where("account_pools.pool_id = ? AND codex_accounts.status = ?", pid, "exhausted").Count(&exhausted)
+		h.db.Model(&database.CodexAccount{}).Joins("JOIN account_pools ON account_pools.account_id = codex_accounts.id").Where("account_pools.pool_id = ? AND codex_accounts.status = ?", pid, "error").Count(&errCount)
 		poolEntries = append(poolEntries, poolEntry{
 			ID:   p.ID,
 			Name: p.Name,
@@ -419,7 +420,7 @@ func (h *UserSelfHandler) PoolStatus(w http.ResponseWriter, r *http.Request) {
 		Week      periodStats `json:"week"`
 	}
 	var owned *ownedAccountInfo
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if h.db.Where("owner_user_id = ?", user.ID).First(&account).Error == nil {
 		var accToday, accWeek periodStats
 		h.db.Model(&database.UsageLog{}).
@@ -465,7 +466,7 @@ func (h *UserSelfHandler) MCPServers(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/user/owned-account
 // Returns the current decrypted credentials for the account this user owns,
-// in the ~/.claude/.credentials.json format. Used by cl to keep local credentials in sync.
+// in the ~/.codex/auth.json format. Used by ourcodex to keep local credentials in sync.
 func (h *UserSelfHandler) OwnedAccount(w http.ResponseWriter, r *http.Request) {
 	if h.enc == nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("encryption not configured"))
@@ -478,7 +479,7 @@ func (h *UserSelfHandler) OwnedAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var account database.ClaudeAccount
+	var account database.CodexAccount
 	if err := h.db.Where("owner_user_id = ?", user.ID).First(&account).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("no owned account"))
 		return
@@ -495,11 +496,22 @@ func (h *UserSelfHandler) OwnedAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"claudeAiOauth": map[string]interface{}{
-			"accessToken":  access,
-			"refreshToken": refresh,
-			"expiresAt":    account.ExpiresAt.UnixMilli(),
-		},
-	})
+	idToken := ""
+	if account.IDToken != "" {
+		idToken, err = h.enc.Decrypt(account.IDToken)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp("failed to decrypt ID token"))
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, oauth.BuildAuthFile(oauth.CredentialSet{
+		IDToken:      idToken,
+		AccessToken:  access,
+		RefreshToken: refresh,
+		AccountID:    account.ChatGPTAccountID,
+		Issuer:       account.OAuthIssuer,
+		ClientID:     account.OAuthClientID,
+		LoginOwnerID: account.OAuthLoginOwnerID,
+		ExpiresAt:    account.ExpiresAt,
+	}))
 }

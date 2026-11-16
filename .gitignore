@@ -1,8 +1,9 @@
 # Environment
 .env
 
-# Claude Code session files
+# Local coding-agent state (may contain credentials)
 .claude/
+.codex/
 
 # Frontend build artifacts
 frontend/node_modules/

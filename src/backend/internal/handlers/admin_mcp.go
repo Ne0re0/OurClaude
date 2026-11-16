@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"claude-proxy/internal/database"
+	"codex-proxy/internal/database"
 
 	"gorm.io/gorm"
 )

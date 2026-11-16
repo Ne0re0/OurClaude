@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,24 +24,33 @@ import (
 )
 
 // binaryToken is patched by the server when this binary is downloaded.
-// The sentinel "CLBINTOK:" followed by 32 hex chars is replaced with a unique key.
-var binaryToken = "CLBINTOK:00000000000000000000000000000000"
+// The sentinel "OCBINTOK:" followed by 32 hex chars is replaced with a unique key.
+var binaryToken = "OCBINTOK:00000000000000000000000000000000"
 
-const configFile = ".claude/proxy.json"
-const claudeCredsFile = ".claude/.credentials.json"
+const configFile = ".ourcodex/config.json"
+const codexCredsFile = ".codex/auth.json"
 
 type Config struct {
 	ServerURL string `json:"server_url"`
 	Token     string `json:"token"`
 }
 
-// claudeCredentials mirrors ~/.claude/.credentials.json
-type claudeCredentials struct {
-	ClaudeAiOauth struct {
-		AccessToken  string `json:"accessToken"`
-		RefreshToken string `json:"refreshToken"`
-		ExpiresAt    int64  `json:"expiresAt"` // milliseconds
-	} `json:"claudeAiOauth"`
+// codexCredentials mirrors the stable fields in ~/.codex/auth.json while
+// preserving unknown fields when credentials are refreshed by the proxy.
+type codexCredentials struct {
+	AuthMode string `json:"auth_mode"`
+	Tokens   struct {
+		IDToken         string `json:"id_token"`
+		AccessToken     string `json:"access_token"`
+		RefreshToken    string `json:"refresh_token"`
+		AccountID       string `json:"account_id"`
+		LoginOwnerID    string `json:"login_owner_id"`
+		OAuthProvenance struct {
+			Issuer   string `json:"issuer"`
+			ClientID string `json:"client_id"`
+		} `json:"oauth_provenance"`
+	} `json:"tokens"`
+	LastRefresh string `json:"last_refresh"`
 }
 
 func configPath() string {
@@ -52,12 +62,12 @@ func configPath() string {
 	return filepath.Join(home, configFile)
 }
 
-func claudeCredsPath() string {
+func codexCredsPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, claudeCredsFile)
+	return filepath.Join(home, codexCredsFile)
 }
 
 func loadConfig() (*Config, error) {
@@ -91,9 +101,9 @@ func saveConfig(cfg *Config) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// readLocalCreds reads ~/.claude/.credentials.json and returns nil if not found or invalid.
-func readLocalCreds() *claudeCredentials {
-	path := claudeCredsPath()
+// readLocalCreds reads ~/.codex/auth.json and returns nil if not found or invalid.
+func readLocalCreds() *codexCredentials {
+	path := codexCredsPath()
 	if path == "" {
 		return nil
 	}
@@ -101,21 +111,19 @@ func readLocalCreds() *claudeCredentials {
 	if err != nil {
 		return nil
 	}
-	var creds claudeCredentials
+	var creds codexCredentials
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return nil
 	}
-	if creds.ClaudeAiOauth.AccessToken == "" || creds.ClaudeAiOauth.RefreshToken == "" {
+	if creds.Tokens.AccessToken == "" || creds.Tokens.RefreshToken == "" {
 		return nil
 	}
 	return &creds
 }
 
-// mergeLocalCreds updates ONLY the token fields in ~/.claude/.credentials.json,
-// preserving all other existing fields (scopes, subscriptionType, tokenType, etc.)
-// A full overwrite would invalidate the Claude.ai session.
-func mergeLocalCreds(remote *claudeCredentials) error {
-	path := claudeCredsPath()
+// mergeLocalCreds updates Codex OAuth fields while preserving future fields.
+func mergeLocalCreds(remote *codexCredentials) error {
+	path := codexCredsPath()
 	if path == "" {
 		return fmt.Errorf("cannot determine home directory")
 	}
@@ -126,19 +134,31 @@ func mergeLocalCreds(remote *claudeCredentials) error {
 		json.Unmarshal(data, &existing) //nolint:errcheck
 	}
 
-	// Get or create the claudeAiOauth section
-	oauth, _ := existing["claudeAiOauth"].(map[string]interface{})
-	if oauth == nil {
-		oauth = map[string]interface{}{}
+	tokens, _ := existing["tokens"].(map[string]interface{})
+	if tokens == nil {
+		tokens = map[string]interface{}{}
 	}
-
-	// Update only the three token fields — leave scopes, subscriptionType, etc. untouched
-	oauth["accessToken"] = remote.ClaudeAiOauth.AccessToken
-	oauth["refreshToken"] = remote.ClaudeAiOauth.RefreshToken
-	if remote.ClaudeAiOauth.ExpiresAt > 0 {
-		oauth["expiresAt"] = remote.ClaudeAiOauth.ExpiresAt
+	tokens["access_token"] = remote.Tokens.AccessToken
+	tokens["refresh_token"] = remote.Tokens.RefreshToken
+	if remote.Tokens.IDToken != "" {
+		tokens["id_token"] = remote.Tokens.IDToken
 	}
-	existing["claudeAiOauth"] = oauth
+	if remote.Tokens.AccountID != "" {
+		tokens["account_id"] = remote.Tokens.AccountID
+	}
+	if remote.Tokens.LoginOwnerID != "" {
+		tokens["login_owner_id"] = remote.Tokens.LoginOwnerID
+	}
+	if remote.Tokens.OAuthProvenance.Issuer != "" || remote.Tokens.OAuthProvenance.ClientID != "" {
+		tokens["oauth_provenance"] = remote.Tokens.OAuthProvenance
+	}
+	existing["tokens"] = tokens
+	if remote.AuthMode != "" {
+		existing["auth_mode"] = remote.AuthMode
+	}
+	if remote.LastRefresh != "" {
+		existing["last_refresh"] = remote.LastRefresh
+	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -167,7 +187,7 @@ func main() {
 	args := os.Args[1:]
 
 	if len(args) == 0 {
-		runClaude(nil)
+		runCodex(nil)
 		return
 	}
 
@@ -191,15 +211,15 @@ func main() {
 	case "help", "--help", "-h":
 		printHelp()
 	default:
-		runClaude(args)
+		runCodex(args)
 	}
 }
 
-// ourclaude login <server_url> [token]
+// ourcodex login <server_url> [token]
 func cmdLogin(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ourclaude login <server_url> [token] [--auto-share]")
-		fmt.Fprintln(os.Stderr, "example: ourclaude login http://proxy.example.com:8080")
+		fmt.Fprintln(os.Stderr, "usage: ourcodex login <server_url> [token] [--auto-share]")
+		fmt.Fprintln(os.Stderr, "example: ourcodex login http://proxy.example.com:8080")
 		os.Exit(1)
 	}
 
@@ -290,12 +310,12 @@ func cmdLogin(args []string) {
 	offerCredentialImport(serverURL, token, autoShare)
 }
 
-// ourclaude init <server_url> [token]
-// Like login, but also detects a local Claude account and offers to share it with the proxy.
+// ourcodex init <server_url> [token]
+// Like login, but also detects a local Codex account and offers to share it with the proxy.
 func cmdInit(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ourclaude init <server_url> [token]")
-		fmt.Fprintln(os.Stderr, "example: ourclaude init http://proxy.example.com:8080")
+		fmt.Fprintln(os.Stderr, "usage: ourcodex init <server_url> [token]")
+		fmt.Fprintln(os.Stderr, "example: ourcodex init http://proxy.example.com:8080")
 		os.Exit(1)
 	}
 
@@ -341,43 +361,38 @@ func cmdInit(args []string) {
 	offerCredentialImport(serverURL, token, true) // init always auto-shares
 }
 
-// offerCredentialImport detects a local Claude account and offers to share it with the proxy.
+// offerCredentialImport detects a local Codex account and offers to share it with the proxy.
 // Called by both cmdLogin and cmdInit after saving the config.
 func offerCredentialImport(serverURL, token string, autoShare bool) {
 	creds := readLocalCreds()
 	if creds == nil {
-		fmt.Printf("\nNo Claude account found in ~/%s.\n", claudeCredsFile)
-		fmt.Printf("If you have a Claude account, log in with the Claude CLI first, then re-run 'ourclaude login'.\n")
-		fmt.Printf("\nYou can now use: ourclaude <claude-args>\n")
+		fmt.Printf("\nNo Codex account found in ~/%s.\n", codexCredsFile)
+		fmt.Printf("If you have a Codex account, log in with the Codex CLI first, then re-run 'ourcodex login'.\n")
+		fmt.Printf("\nYou can now use: ourcodex <codex-args>\n")
 		return
 	}
 
 	// Show what was found (truncated for privacy)
-	accessPreview := creds.ClaudeAiOauth.AccessToken
+	accessPreview := creds.Tokens.AccessToken
 	if len(accessPreview) > 20 {
 		accessPreview = accessPreview[:12] + "..." + accessPreview[len(accessPreview)-4:]
 	}
-	fmt.Printf("\nFound Claude account in ~/%s\n", claudeCredsFile)
+	fmt.Printf("\nFound Codex account in ~/%s\n", codexCredsFile)
 	fmt.Printf("  Access token:  %s\n", accessPreview)
-	if creds.ClaudeAiOauth.ExpiresAt > 0 {
-		exp := time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-		if time.Now().After(exp) {
-			fmt.Printf("  Expires at:    %s (expired — tokens may be refreshed automatically)\n", exp.Format("2006-01-02 15:04"))
-		} else {
-			fmt.Printf("  Expires at:    %s\n", exp.Format("2006-01-02 15:04"))
-		}
+	if creds.Tokens.AccountID != "" {
+		fmt.Printf("  Account ID:    %s\n", creds.Tokens.AccountID)
 	}
 
 	if autoShare {
-		fmt.Println("\nSharing Claude account with proxy (auto-share enabled)...")
+		fmt.Println("\nSharing Codex account with proxy (auto-share enabled)...")
 	} else {
-		fmt.Printf("\nShare this Claude account with the proxy? [y/N] ")
+		fmt.Printf("\nShare this Codex account with the proxy? [y/N] ")
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		if answer != "y" && answer != "yes" {
-			fmt.Println("Skipped. You can run 'ourclaude login --auto-share' to share later.")
-			fmt.Printf("\nYou can now use: ourclaude <claude-args>\n")
+			fmt.Println("Skipped. You can run 'ourcodex login --auto-share' to share later.")
+			fmt.Printf("\nYou can now use: ourcodex <codex-args>\n")
 			return
 		}
 	}
@@ -430,7 +445,7 @@ func offerCredentialImport(serverURL, token string, autoShare bool) {
 		action = "updated"
 	}
 	fmt.Printf("Account %s (id: %d). The proxy will keep your local credentials in sync.\n", action, result.AccountID)
-	fmt.Printf("\nYou can now use: ourclaude <claude-args>\n")
+	fmt.Printf("\nYou can now use: ourcodex <codex-args>\n")
 }
 
 func cmdLogout() {
@@ -448,7 +463,7 @@ func cmdLogout() {
 }
 
 func cmdUninstall() {
-	fmt.Println("Uninstalling ourclaude...")
+	fmt.Println("Uninstalling ourcodex...")
 
 	// Delete owned account on the server (best-effort)
 	if cfg, err := loadConfig(); err == nil {
@@ -481,8 +496,8 @@ func cmdUninstall() {
 	// Remove binary from known locations
 	self, _ := os.Executable()
 	locations := []string{
-		"/usr/local/bin/ourclaude",
-		"/usr/bin/ourclaude",
+		"/usr/local/bin/ourcodex",
+		"/usr/bin/ourcodex",
 	}
 	if self != "" {
 		locations = append([]string{self}, locations...)
@@ -501,7 +516,7 @@ func cmdUninstall() {
 		}
 	}
 	if needSudo {
-		fmt.Fprintln(os.Stderr, "\n  Insufficient permissions. Run: sudo ourclaude uninstall")
+		fmt.Fprintln(os.Stderr, "\n  Insufficient permissions. Run: sudo ourcodex uninstall")
 		os.Exit(1)
 	}
 
@@ -509,14 +524,14 @@ func cmdUninstall() {
 		fmt.Println("  Binary not found in standard locations — remove it manually.")
 	}
 
-	fmt.Println("Done. ourclaude has been uninstalled.")
+	fmt.Println("Done. ourcodex has been uninstalled.")
 }
 
 func cmdStatus() {
 	cfg, err := loadConfig()
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("Not logged in. Run: ourclaude login <server_url>")
+			fmt.Println("Not logged in. Run: ourcodex login <server_url>")
 		} else {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -532,23 +547,22 @@ func cmdStatus() {
 	fmt.Printf("Server:  %s\n", cfg.ServerURL)
 	fmt.Printf("Token:   %s\n", masked)
 	fmt.Printf("Config:  ~/%s\n", configFile)
-	fmt.Printf("\nEnv vars that will be set:\n")
-	fmt.Printf("  ANTHROPIC_BASE_URL=%s\n", cfg.ServerURL)
-	fmt.Printf("  ANTHROPIC_AUTH_TOKEN=%s\n", masked)
+	fmt.Printf("Provider: OurCodex (%s/proxy/v1)\n", cfg.ServerURL)
+	fmt.Printf("\nEnvironment passed to Codex:\n")
+	fmt.Printf("  OURCODEX_API_KEY=%s\n", masked)
 	host := proxyHost(cfg.ServerURL)
 	if host != "" {
 		fmt.Printf("  NO_PROXY=%s\n", host)
 	}
 
-	// Show owned account sync status
+	// Show owned account sync status.
 	creds := readLocalCreds()
 	if creds != nil {
-		exp := time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-		if time.Now().Before(exp) {
-			fmt.Printf("\nOwned account: synced (expires %s)\n", exp.Format("2006-01-02 15:04"))
-		} else {
-			fmt.Printf("\nOwned account: token expired, will refresh on next use\n")
+		fmt.Printf("\nOwned account: synced")
+		if creds.Tokens.AccountID != "" {
+			fmt.Printf(" (%s)", creds.Tokens.AccountID)
 		}
+		fmt.Println()
 	}
 }
 
@@ -556,9 +570,9 @@ func cmdUsage() {
 	cfg, err := loadConfig()
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "ourclaude: not logged in. Run: ourclaude login <server_url>")
+			fmt.Fprintln(os.Stderr, "ourcodex: not logged in. Run: ourcodex login <server_url>")
 		} else {
-			fmt.Fprintf(os.Stderr, "ourclaude: config error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "ourcodex: config error: %v\n", err)
 		}
 		os.Exit(1)
 	}
@@ -566,7 +580,7 @@ func cmdUsage() {
 	// Call /api/user/usage on the proxy server
 	req, err := http.NewRequest(http.MethodGet, cfg.ServerURL+"/api/user/usage", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: failed to build request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: failed to build request: %v\n", err)
 		os.Exit(1)
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
@@ -574,13 +588,13 @@ func cmdUsage() {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: request failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: request failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "ourclaude: server returned %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "ourcodex: server returned %d\n", resp.StatusCode)
 		os.Exit(1)
 	}
 
@@ -597,7 +611,7 @@ func cmdUsage() {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: failed to parse response: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: failed to parse response: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -633,7 +647,7 @@ func formatTokens(n int64) string {
 func cmdMCPSync() {
 	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ourclaude: not logged in. Run: ourclaude login <server_url>")
+		fmt.Fprintln(os.Stderr, "ourcodex: not logged in. Run: ourcodex login <server_url>")
 		os.Exit(1)
 	}
 
@@ -675,52 +689,46 @@ func cmdMCPSync() {
 		return
 	}
 
-	// Build mcpServers config for Claude settings
-	mcpServers := map[string]interface{}{}
+	codexBin, err := exec.LookPath("codex")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ourcodex: 'codex' not found in PATH")
+		os.Exit(1)
+	}
+
 	for _, s := range servers {
-		entry := map[string]interface{}{}
+		// Replace existing definitions so repeated syncs are idempotent.
+		_ = exec.Command(codexBin, "mcp", "remove", s.Name).Run()
+
+		var commandArgs []string
 		if s.Type == "http" || s.URL != "" {
-			entry["url"] = s.URL
+			commandArgs = []string{"mcp", "add", s.Name, "--url", s.URL}
 		} else {
-			entry["command"] = s.Command
+			commandArgs = []string{"mcp", "add", s.Name}
+			var environment map[string]string
+			if s.Env != "" {
+				_ = json.Unmarshal([]byte(s.Env), &environment)
+			}
+			for key, value := range environment {
+				commandArgs = append(commandArgs, "--env", key+"="+value)
+			}
+			commandArgs = append(commandArgs, "--", s.Command)
 			if s.Args != "" {
 				var args []string
-				json.Unmarshal([]byte(s.Args), &args)
-				if len(args) > 0 {
-					entry["args"] = args
-				}
+				_ = json.Unmarshal([]byte(s.Args), &args)
+				commandArgs = append(commandArgs, args...)
 			}
 		}
-		if s.Env != "" {
-			var env map[string]string
-			json.Unmarshal([]byte(s.Env), &env)
-			if len(env) > 0 {
-				entry["env"] = env
-			}
+
+		cmd := exec.Command(codexBin, commandArgs...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "error syncing MCP server %q: %v\n", s.Name, err)
+			os.Exit(1)
 		}
-		mcpServers[s.Name] = entry
 	}
 
-	// Merge into ~/.claude/settings.json
-	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
-	existing := map[string]interface{}{}
-	if data, err := os.ReadFile(settingsPath); err == nil {
-		json.Unmarshal(data, &existing)
-	}
-
-	existing["mcpServers"] = mcpServers
-
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0700); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	data, _ := json.MarshalIndent(existing, "", "  ")
-	if err := os.WriteFile(settingsPath, data, 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing settings: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Synced %d MCP server(s) to ~/.claude/settings.json\n", len(servers))
+	fmt.Printf("Synced %d MCP server(s) to ~/.codex/config.toml\n", len(servers))
 }
 
 func sudoUserHome() string {
@@ -748,8 +756,8 @@ func isProxyReachable(cfg *Config) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// and updates ~/.claude/.credentials.json if they differ. This keeps the
-// owner's local Claude CLI in sync after proxy token rotations.
+// and updates ~/.codex/auth.json if they differ. This keeps the
+// owner's local Codex CLI in sync after proxy token rotations.
 func syncOwnedAccount(cfg *Config) {
 	req, err := http.NewRequest(http.MethodGet, cfg.ServerURL+"/api/user/owned-account", nil)
 	if err != nil {
@@ -768,19 +776,19 @@ func syncOwnedAccount(cfg *Config) {
 		return // no owned account or server error — silent
 	}
 
-	var remote claudeCredentials
+	var remote codexCredentials
 	if err := json.NewDecoder(resp.Body).Decode(&remote); err != nil {
 		return
 	}
-	if remote.ClaudeAiOauth.AccessToken == "" {
+	if remote.Tokens.AccessToken == "" {
 		return
 	}
 
 	// Compare with local credentials
 	local := readLocalCreds()
 	if local != nil &&
-		local.ClaudeAiOauth.AccessToken == remote.ClaudeAiOauth.AccessToken &&
-		local.ClaudeAiOauth.RefreshToken == remote.ClaudeAiOauth.RefreshToken {
+		local.Tokens.AccessToken == remote.Tokens.AccessToken &&
+		local.Tokens.RefreshToken == remote.Tokens.RefreshToken {
 		return // already in sync
 	}
 
@@ -788,13 +796,13 @@ func syncOwnedAccount(cfg *Config) {
 	mergeLocalCreds(&remote)
 }
 
-func runClaude(args []string) {
+func runCodex(args []string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "ourclaude: not logged in. Run: ourclaude login <server_url>")
+			fmt.Fprintln(os.Stderr, "ourcodex: not logged in. Run: ourcodex login <server_url>")
 		} else {
-			fmt.Fprintf(os.Stderr, "ourclaude: config error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "ourcodex: config error: %v\n", err)
 		}
 		os.Exit(1)
 	}
@@ -811,36 +819,41 @@ func runClaude(args []string) {
 		if proxyOnline {
 			printDashboard(cfg)
 		} else {
-			fmt.Println("  Proxy offline. Using local Claude credentials.")
+			fmt.Println("  Proxy offline. Using local Codex credentials.")
 			fmt.Println()
 		}
 	}
 
-	claudeBin, err := exec.LookPath("claude")
+	codexBin, err := exec.LookPath("codex")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ourclaude: 'claude' not found in PATH. Install Claude CLI first.")
+		fmt.Fprintln(os.Stderr, "ourcodex: 'codex' not found in PATH. Install Codex CLI first.")
 		os.Exit(1)
 	}
 
-	// Save terminal state before launching Claude. If Claude exits without
+	// Save terminal state before launching Codex. If Codex exits without
 	// restoring it (e.g. Ctrl+D in raw/TUI mode), we restore it ourselves.
 	var savedTermState *term.State
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		savedTermState, _ = term.GetState(int(os.Stdin.Fd()))
 	}
 
-	cmd := exec.Command(claudeBin, args...)
+	codexArgs := args
+	if proxyOnline {
+		codexArgs = codexProviderArgs(cfg, args)
+	}
+
+	cmd := exec.Command(codexBin, codexArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if proxyOnline {
 		cmd.Env = buildEnv(cfg)
 	} else {
-		// Offline: don't set proxy env vars, let Claude use local credentials
+		// Offline: don't set proxy env vars, let Codex use local credentials
 		cmd.Env = os.Environ()
 	}
 
-	// Forward signals to the child so Ctrl+C / SIGTERM reach Claude directly.
+	// Forward signals to the child so Ctrl+C / SIGTERM reach Codex directly.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -856,13 +869,13 @@ func runClaude(args []string) {
 	signal.Stop(sigCh)
 	close(sigCh)
 
-	// Restore terminal to the state it was in before Claude ran.
-	// This fixes the "broken terminal" symptom after Ctrl+D in Claude's TUI.
+	// Restore terminal to the state it was in before Codex ran.
+	// This fixes the "broken terminal" symptom after Ctrl+D in Codex's TUI.
 	if savedTermState != nil {
 		term.Restore(int(os.Stdin.Fd()), savedTermState) //nolint:errcheck
 	}
 
-	// Reset extended terminal modes that Claude's TUI may have left active:
+	// Reset extended terminal modes that Codex's TUI may have left active:
 	//   \x1b[?1l    — disable application cursor keys (DECCKM) → arrow keys back to \e[A
 	//   \x1b[?2004l — disable bracketed paste mode
 	//   \x1b[>4;0m  — disable modifyOtherKeys
@@ -880,18 +893,21 @@ func runClaude(args []string) {
 	}
 }
 
+func codexProviderArgs(cfg *Config, args []string) []string {
+	provider := fmt.Sprintf(
+		`model_providers.ourcodex={ name = "OurCodex", base_url = %s, env_key = "OURCODEX_API_KEY", wire_api = "responses", requires_openai_auth = false, supports_websockets = false }`,
+		strconv.Quote(strings.TrimRight(cfg.ServerURL, "/")+"/proxy/v1"),
+	)
+	return append([]string{"-c", `model_provider="ourcodex"`, "-c", provider}, args...)
+}
+
 func buildEnv(cfg *Config) []string {
 	host := proxyHost(cfg.ServerURL)
 
 	env := os.Environ()
 
-	// Use ANTHROPIC_AUTH_TOKEN so the proxy token takes full precedence over
-	// any local claude.ai OAuth session, which avoids the "Auth conflict" warning.
-	// Also clear ANTHROPIC_API_KEY so only one auth source is active.
 	overrides := map[string]string{
-		"ANTHROPIC_BASE_URL":   cfg.ServerURL + "/proxy",
-		"ANTHROPIC_AUTH_TOKEN": cfg.Token,
-		"ANTHROPIC_API_KEY":    "",
+		"OURCODEX_API_KEY": cfg.Token,
 	}
 	if host != "" {
 		overrides["NO_PROXY"] = host
@@ -921,7 +937,7 @@ func cmdUpdate() {
 	if err == nil {
 		selfPath, _ = filepath.EvalSymlinks(selfPath)
 		if f, err := os.OpenFile(selfPath+".test", os.O_CREATE|os.O_WRONLY, 0755); err != nil {
-			fmt.Fprintln(os.Stderr, "Insufficient permissions. Run: sudo ourclaude update")
+			fmt.Fprintln(os.Stderr, "Insufficient permissions. Run: sudo ourcodex update")
 			os.Exit(1)
 		} else {
 			f.Close()
@@ -946,9 +962,9 @@ func cmdUpdate() {
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "ourclaude: not logged in. Run: ourclaude login <server_url>")
+			fmt.Fprintln(os.Stderr, "ourcodex: not logged in. Run: ourcodex login <server_url>")
 		} else {
-			fmt.Fprintf(os.Stderr, "ourclaude: config error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "ourcodex: config error: %v\n", err)
 		}
 		os.Exit(1)
 	}
@@ -958,7 +974,7 @@ func cmdUpdate() {
 
 	req, err := http.NewRequest(http.MethodGet, updateURL, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: failed to build request: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: failed to build request: %v\n", err)
 		os.Exit(1)
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
@@ -966,51 +982,51 @@ func cmdUpdate() {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: update request failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: update request failed: %v\n", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "ourclaude: server returned %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "ourcodex: server returned %d\n", resp.StatusCode)
 		os.Exit(1)
 	}
 
 	// Write to a temp file next to the current executable.
 	selfPath, err = os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: cannot find own path: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: cannot find own path: %v\n", err)
 		os.Exit(1)
 	}
 	selfPath, err = filepath.EvalSymlinks(selfPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: cannot resolve path: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: cannot resolve path: %v\n", err)
 		os.Exit(1)
 	}
 
 	tmpPath := selfPath + ".new"
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ourclaude: cannot write update: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: cannot write update: %v\n", err)
 		os.Exit(1)
 	}
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "ourclaude: download failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: download failed: %v\n", err)
 		os.Exit(1)
 	}
 	f.Close()
 
 	if err := os.Rename(tmpPath, selfPath); err != nil {
 		os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "ourclaude: failed to replace binary: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ourcodex: failed to replace binary: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Extract the embedded key from the sentinel (first 8 chars shown).
-	key := strings.TrimPrefix(binaryToken, "CLBINTOK:")
+	key := strings.TrimPrefix(binaryToken, "OCBINTOK:")
 	if len(key) > 8 {
 		key = key[:8] + "..."
 	}
@@ -1032,18 +1048,18 @@ const (
 type dashMe struct {
 	Name  string `json:"name"`
 	Quota struct {
-		DailyUsed    int64   `json:"daily_used"`
-		DailyLimit   int64   `json:"daily_limit"`
-		MonthlyUsed  int64   `json:"monthly_used"`
-		MonthlyLimit int64   `json:"monthly_limit"`
+		DailyUsed     int64   `json:"daily_used"`
+		DailyLimit    int64   `json:"daily_limit"`
+		MonthlyUsed   int64   `json:"monthly_used"`
+		MonthlyLimit  int64   `json:"monthly_limit"`
 		MonthlyBudget float64 `json:"monthly_budget"`
 	} `json:"quota"`
 }
 
 type dashPoolStatus struct {
 	Pools []struct {
-		ID   uint   `json:"id"`
-		Name string `json:"name"`
+		ID       uint   `json:"id"`
+		Name     string `json:"name"`
 		Accounts struct {
 			Active    int64 `json:"active"`
 			Exhausted int64 `json:"exhausted"`
@@ -1187,7 +1203,7 @@ func printDashboard(cfg *Config) {
 
 	// Header
 	fmt.Println(dashHR('┌', '┐'))
-	header := " " + ansiBold + ansiCyan + "✦ OurClaude" + ansiReset
+	header := " " + ansiBold + ansiCyan + "✦ OurCodex" + ansiReset
 	if me.Name != "" {
 		header += "  ─  " + ansiBold + me.Name + ansiReset
 	}
@@ -1290,34 +1306,34 @@ func printDashboard(cfg *Config) {
 }
 
 func printHelp() {
-	fmt.Print(`ourclaude - Claude CLI wrapper using OurClaude proxy
+	fmt.Print(`ourcodex - Codex CLI wrapper using OurCodex proxy
 
 Usage:
-  ourclaude init <server_url> [token]    Setup proxy + optionally share your Claude account
-  ourclaude login <server_url> [token]   Configure proxy connection (no account sharing)
-  ourclaude logout                       Remove proxy configuration
-  ourclaude status                       Show current configuration
-  ourclaude usage                        Show your token usage stats
-  ourclaude update                       Download and replace with latest binary
-  ourclaude uninstall                    Remove ourclaude binary and config
-  ourclaude mcp-sync                     Sync MCP servers from proxy to local settings
-  ourclaude [claude-args...]             Run claude through the proxy
+  ourcodex init <server_url> [token]    Setup proxy + optionally share your Codex account
+  ourcodex login <server_url> [token]   Configure proxy connection (no account sharing)
+  ourcodex logout                       Remove proxy configuration
+  ourcodex status                       Show current configuration
+  ourcodex usage                        Show your token usage stats
+  ourcodex update                       Download and replace with latest binary
+  ourcodex uninstall                    Remove ourcodex binary and config
+  ourcodex mcp-sync                     Sync MCP servers from proxy to local settings
+  ourcodex [codex-args...]             Run codex through the proxy
 
 Examples:
-  ourclaude init http://proxy.example.com:8080
-  ourclaude init http://proxy.example.com:8080 sk-proxy-abc123
-  ourclaude login http://proxy.example.com:8080
-  ourclaude "explain this code"
-  ourclaude --model claude-opus-4-5 "write tests for this"
-  ourclaude usage
-  ourclaude status
-  ourclaude logout
+  ourcodex init http://proxy.example.com:8080
+  ourcodex init http://proxy.example.com:8080 sk-proxy-abc123
+  ourcodex login http://proxy.example.com:8080
+  ourcodex "explain this code"
+  ourcodex --model gpt-5.4 "write tests for this"
+  ourcodex usage
+  ourcodex status
+  ourcodex logout
 
-Config stored in: ~/.claude/proxy.json
+Config stored in: ~/.ourcodex/config.json
 
-Account sharing (ourclaude init):
-  If you have a Claude account connected locally, ourclaude init will offer to share
+Account sharing (ourcodex init):
+  If you have a Codex account connected locally, ourcodex init will offer to share
   it with the proxy. The proxy will automatically keep your local credentials
-  (~/.claude/.credentials.json) in sync after token rotations.
+  (~/.codex/auth.json) in sync after token rotations.
 `)
 }

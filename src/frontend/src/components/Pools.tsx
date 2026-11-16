@@ -58,7 +58,7 @@ function CreatePoolModal({ onClose }: { onClose: () => void }) {
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Allowed Models <span className="text-gray-400 dark:text-gray-500 font-normal">(comma-separated, optional)</span></label>
             <input
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 dark:bg-gray-700 dark:text-white dark:placeholder-gray-400"
-              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="claude-sonnet-4-20250514, claude-opus-4-20250514"
+              value={allowedModels} onChange={e => setAllowedModels(e.target.value)} placeholder="gpt-5.4, gpt-5.3-codex"
             />
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
@@ -105,7 +105,7 @@ export default function Pools() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Pools</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Group Claude accounts and assign them to users.</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Group Codex accounts and assign them to users.</p>
         </div>
         <button
           onClick={() => setShowCreate(true)}
@@ -120,7 +120,7 @@ export default function Pools() {
         <div className="text-gray-400 dark:text-gray-500">Loading...</div>
       ) : pools.length === 0 ? (
         <div className="bg-white dark:bg-gray-800 rounded-xl p-12 text-center shadow-sm border border-gray-100 dark:border-gray-700">
-          <p className="text-gray-400 dark:text-gray-500">No pools yet. Create one to group Claude accounts.</p>
+          <p className="text-gray-400 dark:text-gray-500">No pools yet. Create one to group Codex accounts.</p>
         </div>
       ) : (
         <div className="grid gap-4">
