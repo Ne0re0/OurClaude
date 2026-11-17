@@ -41,9 +41,9 @@ type Server struct {
 	webhooks    *webhook.Dispatcher
 	logStream   *sse.Broadcaster
 	statsStream *sse.Broadcaster
-	settings     *settings.Service
-	quotaPoller  *quota.Poller
-	frontendFS   fs.FS
+	settings    *settings.Service
+	quotaPoller *quota.Poller
+	frontendFS  fs.FS
 }
 
 func New(cfg *config.Config, db *gorm.DB, frontendFS fs.FS) *Server {
@@ -145,6 +145,8 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		r.Put("/api/admin/pools/{id}", poolsH.Update)
 		r.Delete("/api/admin/pools/{id}", poolsH.Delete)
 		r.Post("/api/admin/pools/{id}/reset", poolsH.Reset)
+		r.Put("/api/admin/pools/{id}/scheduled-reset", poolsH.ScheduleReset)
+		r.Delete("/api/admin/pools/{id}/scheduled-reset", poolsH.CancelScheduledReset)
 		r.Get("/api/admin/pools/{id}/stats", poolsH.Stats)
 		r.Get("/api/admin/pools/{id}/users", poolsH.Users)
 		r.Get("/api/admin/pools/{id}/quotas", poolsH.Quotas)
@@ -358,12 +360,12 @@ func (s *Server) frontendHandler() http.HandlerFunc {
 	}
 }
 
-
 func (s *Server) Start() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	s.poolMgr.StartAutoReset(ctx, s.cfg.PoolResetInterval)
+	s.poolMgr.StartScheduledResets(ctx)
 	s.poolMgr.StartHealthCheck(ctx, s.cfg.HealthCheckInterval, s.cfg.AnthropicURL)
 
 	// Start Anthropic quota poller

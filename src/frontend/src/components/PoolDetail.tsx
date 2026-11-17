@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { poolsApi, accountsApi, Pool, Account, User } from '../lib/api'
-import { ArrowLeft, Server, Users, Zap, AlertTriangle, CheckCircle, Link2Off } from 'lucide-react'
+import { ArrowLeft, Server, Users, Zap, AlertTriangle, CheckCircle, Link2Off, Clock3 } from 'lucide-react'
 
 function fmtTokens(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
@@ -134,6 +134,52 @@ function AccountRow({ account, poolId }: { account: Account; poolId: number }) {
   )
 }
 
+function ResetSchedule({ pool }: { pool: Pool }) {
+  const [resetAt, setResetAt] = useState('')
+  const [error, setError] = useState('')
+  const qc = useQueryClient()
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['pool-stats', pool.id] })
+    qc.invalidateQueries({ queryKey: ['pools'] })
+    setError('')
+  }
+  const schedule = useMutation({
+    mutationFn: () => poolsApi.scheduleReset(pool.id, new Date(resetAt).toISOString()),
+    onSuccess: () => { setResetAt(''); refresh() },
+    onError: (e: Error) => setError(e.message),
+  })
+  const cancel = useMutation({
+    mutationFn: () => poolsApi.cancelScheduledReset(pool.id),
+    onSuccess: refresh,
+    onError: (e: Error) => setError(e.message),
+  })
+  const validFuture = resetAt && !Number.isNaN(new Date(resetAt).getTime()) && new Date(resetAt).getTime() > Date.now()
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5">
+      <h2 className="font-semibold text-gray-900 dark:text-white text-sm flex items-center gap-2"><Clock3 className="w-4 h-4 text-gray-500" /> Scheduled reset</h2>
+      <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Reactivate exhausted accounts in this pool once at a chosen time. This is off until you schedule it.</p>
+      {pool.scheduled_reset_at && (
+        <div className="flex items-center gap-3 flex-wrap mt-3 text-sm">
+          <span className="text-gray-700 dark:text-gray-300">Next reset: <strong>{new Date(pool.scheduled_reset_at).toLocaleString()}</strong></span>
+          <button type="button" onClick={() => cancel.mutate()} disabled={cancel.isPending} className="text-red-600 dark:text-red-400 hover:underline disabled:opacity-50">Cancel reset</button>
+        </div>
+      )}
+      <div className="flex items-end gap-3 flex-wrap mt-4">
+        <label className="text-sm text-gray-700 dark:text-gray-300">
+          Date and time (your local time)
+          <input type="datetime-local" value={resetAt} onChange={e => setResetAt(e.target.value)} className="block mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" />
+        </label>
+        <button type="button" onClick={() => schedule.mutate()} disabled={!validFuture || schedule.isPending} className="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm hover:bg-brand-600 disabled:opacity-50">
+          {pool.scheduled_reset_at ? 'Reschedule' : 'Schedule reset'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">To receive a reminder, subscribe a webhook to <code>pool.reset.reminder</code>. It fires five hours before the reset, or shortly after scheduling if the reset is sooner.</p>
+      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+    </div>
+  )
+}
+
 export default function PoolDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -231,6 +277,8 @@ export default function PoolDetail() {
           )}
         </div>
       </div>
+
+      <ResetSchedule pool={pool} />
 
       {/* Stats cards */}
       {statsData && (

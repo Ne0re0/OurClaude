@@ -113,6 +113,9 @@ When all OAuth accounts are exhausted, it automatically falls back to Anthropic 
 - **Request Deduplication** — `Idempotency-Key` header support
 - **Model Aliasing** — Remap model names transparently
 - **Webhook Notifications** — Slack/Discord alerts with retry (account exhaustion, quota warnings)
+- **Scheduled Pool Resets** — Optional one-time reset of exhausted accounts at a chosen date and time, with a webhook reminder five hours before
+
+To schedule a pool reset, open the pool details and choose a local date and time under **Scheduled reset**. The schedule is saved in the database and can be changed or cancelled. The reset runs within one minute of the chosen time, including after a server restart. Add a Slack, Discord, or HTTP webhook subscribed to `pool.reset.reminder` to receive the five-hour reminder. If the chosen time is less than five hours away, the reminder is sent on the next scheduler check while the reset is still pending.
 
 ### Developer Experience
 - **CLI Tool (`ourclaude`)** — Login, status dashboard, credential sync, offline fallback

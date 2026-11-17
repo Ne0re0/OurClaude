@@ -125,6 +125,73 @@ func (m *Manager) StartAutoReset(ctx context.Context, interval time.Duration) {
 	}()
 }
 
+// StartScheduledResets checks persisted one-time pool resets. A restart does not
+// lose a schedule; overdue resets are executed on the next check.
+func (m *Manager) StartScheduledResets(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		m.processScheduledResets(time.Now())
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				m.processScheduledResets(now)
+			}
+		}
+	}()
+}
+
+func (m *Manager) processScheduledResets(now time.Time) {
+	var pools []database.Pool
+	if err := m.db.Where("scheduled_reset_at IS NOT NULL").Find(&pools).Error; err != nil {
+		log.Printf("pool scheduled reset: failed to list pools: %v", err)
+		return
+	}
+	for _, p := range pools {
+		if p.ScheduledResetAt == nil {
+			continue
+		}
+		if !now.Before(*p.ScheduledResetAt) {
+			// Reset and clear the schedule atomically. A failed reset remains due
+			// and will be retried on the next tick.
+			err := m.db.Transaction(func(tx *gorm.DB) error {
+				result := tx.Model(&database.Pool{}).
+					Where("id = ? AND scheduled_reset_at = ?", p.ID, p.ScheduledResetAt).
+					Updates(map[string]interface{}{"scheduled_reset_at": nil, "reset_reminder_sent": false})
+				if result.Error != nil || result.RowsAffected == 0 {
+					return result.Error
+				}
+				return tx.Model(&database.ClaudeAccount{}).
+					Where("id IN (SELECT account_id FROM account_pools WHERE pool_id = ?) AND status = ?", p.ID, "exhausted").
+					Updates(map[string]interface{}{"status": "active", "last_error": ""}).Error
+			})
+			if err != nil {
+				log.Printf("pool scheduled reset: failed for pool %d: %v", p.ID, err)
+			}
+			continue
+		}
+		if p.ResetReminderSent || now.Before(p.ScheduledResetAt.Add(-5*time.Hour)) {
+			continue
+		}
+		result := m.db.Model(&database.Pool{}).
+			Where("id = ? AND scheduled_reset_at = ? AND reset_reminder_sent = ?", p.ID, p.ScheduledResetAt, false).
+			Update("reset_reminder_sent", true)
+		if result.Error != nil {
+			log.Printf("pool scheduled reset: failed to mark reminder for pool %d: %v", p.ID, result.Error)
+			continue
+		}
+		if result.RowsAffected > 0 && m.webhooks != nil {
+			m.webhooks.Dispatch("pool.reset.reminder", map[string]interface{}{
+				"pool_id": p.ID, "pool_name": p.Name,
+				"reset_at": p.ScheduledResetAt.UTC().Format(time.RFC3339),
+				"message":  "Pool reset is scheduled in less than 5 hours",
+			})
+		}
+	}
+}
+
 // GetAccountForUser selects the best account across multiple pools.
 // It picks the pool with the lowest total token usage today, then applies
 // round-robin within that pool. Falls back to single-pool behaviour if only

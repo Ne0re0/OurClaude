@@ -19,6 +19,8 @@ type Pool struct {
 	DailyTokenQuota   int             `gorm:"default:0" json:"daily_token_quota"`   // 0 = unlimited
 	MonthlyTokenQuota int             `gorm:"default:0" json:"monthly_token_quota"` // 0 = unlimited
 	AllowedModels     string          `json:"allowed_models"`                       // comma-separated, empty = all
+	ScheduledResetAt  *time.Time      `gorm:"index" json:"scheduled_reset_at"`      // optional one-time reset
+	ResetReminderSent bool            `gorm:"default:false" json:"reset_reminder_sent"`
 	CreatedAt         time.Time       `json:"created_at"`
 	Accounts          []ClaudeAccount `gorm:"many2many:account_pools;joinForeignKey:PoolID;joinReferences:AccountID" json:"accounts,omitempty"`
 }
