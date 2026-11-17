@@ -139,6 +139,8 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		r.Put("/api/admin/pools/{id}", poolsH.Update)
 		r.Delete("/api/admin/pools/{id}", poolsH.Delete)
 		r.Post("/api/admin/pools/{id}/reset", poolsH.Reset)
+		r.Put("/api/admin/pools/{id}/scheduled-reset", poolsH.ScheduleReset)
+		r.Delete("/api/admin/pools/{id}/scheduled-reset", poolsH.CancelScheduledReset)
 		r.Get("/api/admin/pools/{id}/stats", poolsH.Stats)
 		r.Get("/api/admin/pools/{id}/users", poolsH.Users)
 		r.Get("/api/admin/pools/{id}/quotas", poolsH.Quotas)
@@ -361,6 +363,7 @@ func (s *Server) Start() error {
 	defer stop()
 
 	s.poolMgr.StartAutoReset(ctx, s.cfg.PoolResetInterval)
+	s.poolMgr.StartScheduledResets(ctx)
 	s.poolMgr.StartHealthCheck(ctx, s.cfg.HealthCheckInterval, s.cfg.OpenAIAPIURL, s.cfg.ChatGPTURL)
 
 	// Start the Codex rate-limit collector lifecycle.

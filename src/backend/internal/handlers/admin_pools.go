@@ -174,6 +174,65 @@ func (h *PoolsHandler) Reset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "pool reset: exhausted accounts reactivated"})
 }
 
+// PUT /api/admin/pools/{id}/scheduled-reset schedules one future reset.
+func (h *PoolsHandler) ScheduleReset(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid id"))
+		return
+	}
+	var req struct {
+		ResetAt string `json:"reset_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
+		return
+	}
+	resetAt, err := time.Parse(time.RFC3339, req.ResetAt)
+	if err != nil || !resetAt.After(time.Now()) {
+		writeJSON(w, http.StatusBadRequest, errResp("reset_at must be a future RFC3339 date and time"))
+		return
+	}
+	var p database.Pool
+	if err := h.db.First(&p, id).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, errResp("pool not found"))
+		return
+	}
+	resetAt = resetAt.UTC()
+	if err := h.db.Model(&p).Updates(map[string]interface{}{
+		"scheduled_reset_at":  resetAt,
+		"reset_reminder_sent": false,
+	}).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to schedule reset"))
+		return
+	}
+	logAudit(h.db, r, "schedule_pool_reset", "pool:"+p.Name, resetAt.Format(time.RFC3339))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"scheduled_reset_at": resetAt})
+}
+
+// DELETE /api/admin/pools/{id}/scheduled-reset cancels a pending reset.
+func (h *PoolsHandler) CancelScheduledReset(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid id"))
+		return
+	}
+	var p database.Pool
+	if err := h.db.First(&p, id).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, errResp("pool not found"))
+		return
+	}
+	if err := h.db.Model(&p).Updates(map[string]interface{}{
+		"scheduled_reset_at":  nil,
+		"reset_reminder_sent": false,
+	}).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to cancel scheduled reset"))
+		return
+	}
+	logAudit(h.db, r, "cancel_pool_reset", "pool:"+p.Name, "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GET /api/admin/pools/{id}/stats — usage stats for a specific pool
 func (h *PoolsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)

@@ -94,6 +94,8 @@ export const poolsApi = {
             put<Pool>(`/admin/pools/${id}`, body),
   delete: (id: number) => del(`/admin/pools/${id}`),
   reset:  (id: number) => post(`/admin/pools/${id}/reset`),
+  scheduleReset: (id: number, resetAt: string) => put(`/admin/pools/${id}/scheduled-reset`, { reset_at: resetAt }),
+  cancelScheduledReset: (id: number) => del(`/admin/pools/${id}/scheduled-reset`),
   stats:  (id: number) => get<PoolStats>(`/admin/pools/${id}/stats`),
   users:  (id: number) => get<User[]>(`/admin/pools/${id}/users`),
 }
@@ -316,6 +318,8 @@ export interface Pool {
   daily_token_quota: number
   monthly_token_quota: number
   allowed_models?: string
+  scheduled_reset_at?: string | null
+  reset_reminder_sent?: boolean
   accounts?: Account[]
 }
 

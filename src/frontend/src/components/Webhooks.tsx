@@ -9,6 +9,7 @@ const EVENT_OPTIONS = [
   { value: 'account.exhausted', label: 'Account exhausted (quota hit)' },
   { value: 'account.error',     label: 'Account error (request failed)' },
   { value: 'quota.warning',     label: 'Quota warning (80% of limit reached)' },
+  { value: 'pool.reset.reminder', label: 'Pool reset reminder (5 hours before)' },
 ]
 
 function CopySecret({ secret }: { secret: string }) {
@@ -167,6 +168,7 @@ export default function Webhooks() {
           <li><code>account.exhausted</code> — Quota hit (429)</li>
           <li><code>account.error</code> — Network/token failure</li>
           <li><code>quota.warning</code> — User at 80% of limit</li>
+          <li><code>pool.reset.reminder</code> — Scheduled pool reset is within 5 hours</li>
         </ul>
         <p>Payloads are signed with <code>X-Signature: sha256=...</code> when a secret is set. Discord webhook URLs are auto-detected and formatted as embeds.</p>
       </div>

@@ -27,7 +27,10 @@ OurCodex supports:
 - Responses API streaming and usage accounting
 - per-account Codex quota reads for both OAuth sign-in types, plus updates from `x-codex-*` response headers
 - model aliases, optional instruction injection, response caching, webhooks, audit logs, and Prometheus metrics
+- optional one-time pool resets at a chosen date and time, with a webhook reminder five hours before
 - setup links, downloadable `ourcodex` binaries, owned-account sync, and MCP configuration sync
+
+To schedule a pool reset, open its details in the dashboard and choose a local date and time under **Scheduled reset**. The schedule survives restarts and can be changed or cancelled. The reset reactivates exhausted accounts within one minute of the chosen time. Subscribe a webhook to `pool.reset.reminder` for the five-hour reminder; if the reset is sooner, the reminder is sent on the next scheduler check while it is still pending.
 
 ## Quick start
 
