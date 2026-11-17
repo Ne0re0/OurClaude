@@ -106,7 +106,7 @@ export default function Analytics() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Analytics</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Token usage across users and models.</p>
@@ -170,12 +170,12 @@ export default function Analytics() {
 
       {/* Evolution charts — tabbed */}
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-0">
+        <div className="flex items-center justify-between flex-wrap gap-3 px-6 pt-5 pb-0">
           <div>
             <h2 className="text-base font-semibold text-gray-900 dark:text-white">Evolution — last {days} days</h2>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Daily token usage, request count, and estimated cost over time.</p>
           </div>
-          <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600 text-xs">
+          <div className="flex shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600 text-xs">
             {(['tokens', 'requests', 'cost'] as Tab[]).map(t => (
               <button
                 key={t}

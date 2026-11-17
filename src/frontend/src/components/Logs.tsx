@@ -235,7 +235,7 @@ export default function Logs() {
         ) : !displayedLogs.length ? (
           <div className="p-8 text-center text-gray-400 dark:text-gray-500">No logs yet.</div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll"><table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Time</th>
@@ -305,7 +305,7 @@ export default function Logs() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 

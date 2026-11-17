@@ -82,7 +82,7 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel, dange
 }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
         <h3 className="text-lg font-semibold dark:text-white mb-2">{title}</h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{message}</p>
         <div className="flex gap-3">

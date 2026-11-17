@@ -29,7 +29,7 @@ export default function Sessions() {
         ) : sessions.length === 0 ? (
           <div className="p-8 text-center text-gray-400 dark:text-gray-500">No active sessions.</div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll"><table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Admin</th>
@@ -59,12 +59,12 @@ export default function Sessions() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
       {confirmAction && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
             <h3 className="text-lg font-semibold dark:text-white mb-2">{confirmAction.title}</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{confirmAction.message}</p>
             <div className="flex gap-3">

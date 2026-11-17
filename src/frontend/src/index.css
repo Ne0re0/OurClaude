@@ -22,6 +22,21 @@
   .btn-primary {
     @apply px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 disabled:opacity-50 transition-colors;
   }
+  /* Wide tables scroll sideways on small screens instead of squeezing */
+  .table-scroll {
+    @apply overflow-x-auto;
+  }
+}
+
+@media (max-width: 767px) {
+  .table-scroll th,
+  .table-scroll td {
+    white-space: nowrap;
+  }
+  /* iOS zooms the page when focusing a field with text under 16px */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
 }
 
 /* Easter egg: comrade mode */
@@ -48,6 +63,9 @@
 .comrade aside.bg-gray-900,
 .comrade aside { background-color: #1a0505 !important; }
 .comrade.dark aside { background-color: #0d0202 !important; }
+
+.comrade .mobile-topbar { background-color: #1a0505 !important; }
+.comrade.dark .mobile-topbar { background-color: #0d0202 !important; }
 
 /* Active nav item */
 .comrade .bg-gray-700 { background-color: #3d0a0a !important; }

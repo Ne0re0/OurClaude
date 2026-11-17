@@ -40,7 +40,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-gray-900 to-gray-800">
       <div className="w-full max-w-md">
         {/* Logo / Title */}
         <div className="text-center mb-8">
@@ -55,7 +55,7 @@ export default function Login() {
         </div>
 
         {/* Card */}
-        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 sm:p-8">
           <form onSubmit={handleSubmit} className="space-y-5">
             {!needsTotp ? (
               <>

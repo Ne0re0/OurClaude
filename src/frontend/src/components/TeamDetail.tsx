@@ -29,8 +29,8 @@ function TeamModal({ team, onClose }: { team: Team; onClose: () => void }) {
   })
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90dvh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-5 dark:text-white">Edit Team</h2>
         <div className="space-y-4">
           <div>
@@ -81,7 +81,7 @@ function ConfirmModal({ title, message, confirmLabel, onConfirm, onCancel, dange
 }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
         <h3 className="text-lg font-semibold dark:text-white mb-2">{title}</h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{message}</p>
         <div className="flex gap-3">
@@ -213,7 +213,7 @@ export default function TeamDetail() {
         {members.length === 0 ? (
           <div className="px-5 py-8 text-center text-gray-400 dark:text-gray-500 text-sm">No members in this team.</div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll"><table className="w-full text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700/50 text-xs text-gray-500 dark:text-gray-400 uppercase">
               <tr>
                 <th className="px-5 py-2.5 text-left">Name</th>
@@ -238,7 +238,7 @@ export default function TeamDetail() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 

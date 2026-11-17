@@ -63,8 +63,8 @@ function CreateLinkModal({ onClose }: CreateLinkModal) {
   if (created) {
     const url = window.location.origin + downloadsApi.preAuthURL(created.token)
     return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md p-6">
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md p-6 max-h-[90dvh] overflow-y-auto">
           <h2 className="text-lg font-semibold mb-4 text-green-700">Link created</h2>
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">Share this URL — it works only once (or up to your limit).</p>
           <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900 border dark:border-gray-700 rounded-lg px-3 py-2 mb-4">
@@ -78,8 +78,8 @@ function CreateLinkModal({ onClose }: CreateLinkModal) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md p-6">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md p-6 max-h-[90dvh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-4 dark:text-white">Generate pre-auth download link</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -234,7 +234,7 @@ export default function Downloads() {
         {links.length === 0 ? (
           <div className="px-6 py-10 text-center text-gray-400 dark:text-gray-500 text-sm">No links yet.</div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll"><table className="w-full text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               <tr>
                 <th className="px-6 py-3 text-left">Label / Platform</th>
@@ -296,7 +296,7 @@ export default function Downloads() {
                 )
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
@@ -311,7 +311,7 @@ export default function Downloads() {
         {binaryDownloads.length === 0 ? (
           <div className="px-6 py-10 text-center text-gray-400 dark:text-gray-500 text-sm">No binary downloads recorded yet.</div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="table-scroll"><table className="w-full text-sm">
             <thead className="bg-gray-50 dark:bg-gray-700 text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               <tr>
                 <th className="px-6 py-3 text-left">User</th>
@@ -330,7 +330,7 @@ export default function Downloads() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
@@ -364,7 +364,7 @@ export default function Downloads() {
       {showCreate && <CreateLinkModal onClose={() => setShowCreate(false)} />}
       {confirmAction && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
             <h3 className="text-lg font-semibold dark:text-white mb-2">{confirmAction.title}</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{confirmAction.message}</p>
             <div className="flex gap-3">

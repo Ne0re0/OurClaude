@@ -5,7 +5,7 @@ import { authApi, Admin } from '../lib/api'
 import {
   LayoutDashboard, Users, Layers, Server, BarChart2, Settings, LogOut,
   ScrollText, ShieldCheck, Webhook, ClipboardList, Mail, Download, ArrowLeftRight, MonitorSmartphone,
-  Moon, Sun, UsersRound, Plug, Gauge
+  Moon, Sun, UsersRound, Plug, Gauge, Menu, X
 } from 'lucide-react'
 
 const navGroups = [
@@ -52,6 +52,14 @@ export default function Layout({ admin, children }: LayoutProps) {
     if (saved) return saved === 'dark'
     return window.matchMedia('(prefers-color-scheme: dark)').matches
   })
+
+  // Mobile: the sidebar is an off-canvas drawer, closed on every navigation
+  const [menuOpen, setMenuOpen] = useState(false)
+  useEffect(() => { setMenuOpen(false) }, [location.pathname])
+
+  const currentPage = navGroups
+    .flatMap(g => g.items)
+    .find(i => i.path === '/' ? location.pathname === '/' : location.pathname.startsWith(i.path))
 
   // Easter egg: 5 clicks on logo toggles comrade mode
   const [clickCount, setClickCount] = useState(0)
@@ -116,7 +124,7 @@ export default function Layout({ admin, children }: LayoutProps) {
     return (
       <Link
         to={path}
-        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+        className={`flex items-center gap-3 px-3 py-2.5 md:py-2 rounded-lg text-sm transition-colors ${
           active ? 'bg-gray-700 text-white font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
         }`}
       >
@@ -127,9 +135,38 @@ export default function Layout({ admin, children }: LayoutProps) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex flex-col md:flex-row h-screen h-dvh overflow-hidden">
+      {/* Mobile top bar */}
+      <header className="mobile-topbar md:hidden flex items-center gap-2 h-14 px-2 shrink-0 bg-gray-900 dark:bg-gray-950 text-white">
+        <button
+          onClick={() => setMenuOpen(true)}
+          aria-label="Open menu"
+          aria-expanded={menuOpen}
+          className="p-2.5 rounded-lg text-gray-300 hover:bg-gray-800 hover:text-white"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <span className="font-semibold text-sm truncate">{currentPage?.label}</span>
+      </header>
+
+      {/* Mobile drawer backdrop */}
+      {menuOpen && (
+        <div className="md:hidden fixed inset-0 z-30 bg-black/50" onClick={() => setMenuOpen(false)} />
+      )}
+
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 dark:bg-gray-950 text-white flex flex-col">
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-64 max-w-[85vw] bg-gray-900 dark:bg-gray-950 text-white flex flex-col transition-transform duration-200 md:static md:z-auto md:translate-x-0 md:transition-none ${
+          menuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full invisible md:visible'
+        }`}
+      >
+        <button
+          onClick={() => setMenuOpen(false)}
+          aria-label="Close menu"
+          className="md:hidden absolute top-3.5 right-3 p-2 rounded-lg text-gray-400 hover:bg-gray-800 hover:text-white"
+        >
+          <X className="w-5 h-5" />
+        </button>
         {/* Logo */}
         <div className="px-6 py-5 border-b border-gray-700 select-none cursor-pointer" onClick={handleLogoClick}>
           <div className="flex items-center gap-3">
@@ -204,8 +241,8 @@ export default function Layout({ admin, children }: LayoutProps) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-gray-50 dark:bg-gray-900">
-        <div className="p-8">
+      <main className="flex-1 min-w-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+        <div className="p-4 md:p-8">
           {children}
         </div>
       </main>

@@ -75,8 +75,8 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
 
   if (created) {
     return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90dvh] overflow-y-auto">
           <h2 className="text-lg font-semibold mb-2 dark:text-white">Invite created</h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">Share this token — it's only shown once.</p>
           <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-3 font-mono text-xs break-all mb-2 dark:text-gray-300">{created.token}</div>
@@ -98,8 +98,8 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90dvh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-5 dark:text-white">Create Invite</h2>
         <div className="space-y-4">
           <div>
@@ -158,7 +158,7 @@ export default function Invites() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Invites</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Send invite links so people can self-register as proxy users.</p>
@@ -178,7 +178,7 @@ export default function Invites() {
         ) : invites.length === 0 ? (
           <div className="p-8 text-center text-gray-400 dark:text-gray-500">No invites yet.</div>
         ) : (
-          <table className="w-full">
+          <div className="table-scroll"><table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
                 <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Label</th>
@@ -249,14 +249,14 @@ export default function Invites() {
                 )
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
       {showCreate && <CreateInviteModal onClose={() => setShowCreate(false)} />}
       {confirmAction && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
             <h3 className="text-lg font-semibold dark:text-white mb-2">{confirmAction.title}</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{confirmAction.message}</p>
             <div className="flex gap-3">

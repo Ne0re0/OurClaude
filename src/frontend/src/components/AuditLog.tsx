@@ -38,7 +38,7 @@ export default function AuditLog() {
         ) : !data || data.logs.length === 0 ? (
           <div className="p-8 text-center text-gray-400 dark:text-gray-500">No audit entries yet.</div>
         ) : (
-          <table className="w-full">
+          <div className="table-scroll"><table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
                 <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Time</th>
@@ -69,7 +69,7 @@ export default function AuditLog() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
