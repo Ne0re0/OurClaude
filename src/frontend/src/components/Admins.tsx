@@ -24,8 +24,8 @@ function CreateAdminModal({ onClose }: { onClose: () => void }) {
   })
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90dvh] overflow-y-auto">
         <h2 className="text-lg font-semibold mb-5 dark:text-white">Create Admin</h2>
         <div className="space-y-4">
           <div>
@@ -85,7 +85,7 @@ export default function Admins() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Admin Accounts</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Manage admin users and their access level.</p>
@@ -105,7 +105,7 @@ export default function Admins() {
         ) : admins.length === 0 ? (
           <div className="p-8 text-center text-gray-400 dark:text-gray-500">No admins found.</div>
         ) : (
-          <table className="w-full">
+          <div className="table-scroll"><table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
                 <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Username</th>
@@ -145,14 +145,14 @@ export default function Admins() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
       {showCreate && <CreateAdminModal onClose={() => setShowCreate(false)} />}
       {confirmAction && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl max-h-[90dvh] overflow-y-auto">
             <h3 className="text-lg font-semibold dark:text-white mb-2">{confirmAction.title}</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">{confirmAction.message}</p>
             <div className="flex gap-3">
