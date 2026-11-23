@@ -82,14 +82,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		AdminUsername: admin.Username,
 		Action:        "admin_login",
 		Target:        "admin:" + admin.Username,
-		Details:       "ip=" + r.RemoteAddr,
+		Details:       "ip=" + middleware.ClientIP(r),
 	})
 
 	// Record session in DB for the Sessions page
 	h.db.Create(&database.AdminSession{
 		AdminID:    admin.ID,
 		TokenHash:  hashToken(token),
-		IP:         r.RemoteAddr,
+		IP:         middleware.ClientIP(r),
 		UserAgent:  r.Header.Get("User-Agent"),
 		LastUsedAt: time.Now(),
 		ExpiresAt:  time.Now().Add(h.cfg.JWTExpiry),

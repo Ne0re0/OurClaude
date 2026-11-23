@@ -39,7 +39,7 @@ func (h *SessionsHandler) List(w http.ResponseWriter, r *http.Request) {
 			h.db.Create(&database.AdminSession{
 				AdminID:    claims.AdminID,
 				TokenHash:  hash,
-				IP:         r.RemoteAddr,
+				IP:         middleware.ClientIP(r),
 				UserAgent:  r.Header.Get("User-Agent"),
 				LastUsedAt: time.Now(),
 				ExpiresAt:  expiresAt,
