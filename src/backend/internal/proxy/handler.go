@@ -179,6 +179,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !allowedUpstreamRoute(r.Method, strings.TrimPrefix(r.URL.Path, "/proxy")) {
+		writeError(w, http.StatusNotFound, "endpoint not available through the proxy")
+		return
+	}
+
 	start := time.Now()
 
 	user, err := h.authenticate(r)
@@ -239,6 +244,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var quotaPools []database.Pool
+	h.db.Where("id IN ? AND (daily_token_quota > 0 OR monthly_token_quota > 0)", poolIDs).Find(&quotaPools)
+
 	// Quota checks with cache
 	cached := h.quotas.get(user.ID)
 	if cached == nil {
@@ -249,41 +257,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var dailyUsed int64
 		h.db.Model(&database.UsageLog{}).
 			Where("user_id = ? AND created_at >= ?", user.ID, today).
-			Select("COALESCE(SUM(input_tokens + output_tokens), 0)").
+			Select(quotaTokensSQL).
 			Row().Scan(&dailyUsed)
 
 		var monthlyUsed int64
 		h.db.Model(&database.UsageLog{}).
 			Where("user_id = ? AND created_at >= ?", user.ID, monthStart).
-			Select("COALESCE(SUM(input_tokens + output_tokens), 0)").
+			Select(quotaTokensSQL).
 			Row().Scan(&monthlyUsed)
 
 		budgetSpent := estimateMonthlyCost(h.db, user.ID, monthStart)
 
 		poolDailyUsed := make(map[uint]int64)
 		poolMonthlyUsed := make(map[uint]int64)
-		firstPoolID := poolIDs[0]
-		var poolRec database.Pool
-		if h.db.First(&poolRec, firstPoolID).Error == nil {
-			if poolRec.DailyTokenQuota > 0 {
-				var used int64
-				h.db.Model(&database.UsageLog{}).
-					Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-					Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
-					Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", firstPoolID, today).
-					Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
-					Row().Scan(&used)
-				poolDailyUsed[firstPoolID] = used
+		for _, p := range quotaPools {
+			if p.DailyTokenQuota > 0 {
+				poolDailyUsed[p.ID] = poolTokensSince(h.db, p.ID, today)
 			}
-			if poolRec.MonthlyTokenQuota > 0 {
-				var used int64
-				h.db.Model(&database.UsageLog{}).
-					Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
-					Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
-					Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", firstPoolID, monthStart).
-					Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens), 0)").
-					Row().Scan(&used)
-				poolMonthlyUsed[firstPoolID] = used
+			if p.MonthlyTokenQuota > 0 {
+				poolMonthlyUsed[p.ID] = poolTokensSince(h.db, p.ID, monthStart)
 			}
 		}
 
@@ -323,22 +315,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Per-pool quotas (check first assigned pool for now)
-	firstPoolID := poolIDs[0]
-	var poolRecord database.Pool
-	if h.db.First(&poolRecord, firstPoolID).Error == nil {
-		if poolRecord.DailyTokenQuota > 0 {
-			if int(cached.poolDailyUsed[firstPoolID]) >= poolRecord.DailyTokenQuota {
-				writeError(w, http.StatusTooManyRequests, "pool daily token quota exceeded")
-				return
-			}
-		}
-		if poolRecord.MonthlyTokenQuota > 0 {
-			if int(cached.poolMonthlyUsed[firstPoolID]) >= poolRecord.MonthlyTokenQuota {
-				writeError(w, http.StatusTooManyRequests, "pool monthly token quota exceeded")
-				return
-			}
-		}
+	// Per-pool quotas: only the user's pools still within quota may serve this request.
+	usablePoolIDs := poolsWithinQuota(poolIDs, quotaPools, cached.poolDailyUsed, cached.poolMonthlyUsed)
+	if len(usablePoolIDs) == 0 {
+		writeError(w, http.StatusTooManyRequests, "pool token quota exceeded")
+		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 50*1024*1024) // 50MB limit
@@ -384,13 +365,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Pool-level model restriction
-	if poolRecord.AllowedModels != "" {
-		if !modelAllowed(body, poolRecord.AllowedModels) {
-			writeError(w, http.StatusForbidden, "model not allowed in this pool")
-			return
+	// Pool-level model restriction: keep only the pools that allow the requested model.
+	var usablePools []database.Pool
+	h.db.Where("id IN ?", usablePoolIDs).Find(&usablePools)
+	modelPoolIDs := make([]uint, 0, len(usablePools))
+	for _, p := range usablePools {
+		if p.AllowedModels == "" || modelAllowed(body, p.AllowedModels) {
+			modelPoolIDs = append(modelPoolIDs, p.ID)
 		}
 	}
+	if len(modelPoolIDs) == 0 {
+		writeError(w, http.StatusForbidden, "model not allowed in this pool")
+		return
+	}
+	usablePoolIDs = modelPoolIDs
 	modelListRequest := r.Method == http.MethodGet && strings.TrimPrefix(r.URL.Path, "/proxy") == "/v1/models"
 	if modelListRequest {
 		// Let Go negotiate and transparently decompress upstream gzip before filtering.
@@ -425,7 +413,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	attemptedAccountIDs := make(map[uint]struct{}, maxRetries)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		account, err := h.pool.GetAccountForUserExcludingModel(poolIDs, attemptedAccountIDs, modelRequest.Model)
+		account, err := h.pool.GetAccountForUserExcludingModel(usablePoolIDs, attemptedAccountIDs, modelRequest.Model)
 		if err != nil {
 			if lastErr != nil {
 				break
@@ -967,6 +955,19 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+// allowedUpstreamRoute lists the only Anthropic endpoints users may reach with a
+// pooled account's credentials; anything else (account profile, files, batches…)
+// would let any user act as the account owner outside quota accounting.
+func allowedUpstreamRoute(method, path string) bool {
+	switch path {
+	case "/v1/messages", "/v1/messages/count_tokens":
+		return method == http.MethodPost
+	case "/v1/models":
+		return method == http.MethodGet
+	}
+	return false
+}
+
 func ipAllowed(r *http.Request, whitelist string) bool {
 	ip := net.ParseIP(middleware.ClientIP(r))
 	if ip == nil {
@@ -1038,44 +1039,112 @@ func rewriteModel(body []byte, resolve func(string) string) []byte {
 	return result
 }
 
+// quotaTokensSQL is what token quotas count: input, output and cache writes.
+// Cache reads are excluded (they cost 2.5-10% of input, and Anthropic's own input
+// rate limits ignore them); budgets in USD price every token type instead.
+const quotaTokensSQL = "COALESCE(SUM(input_tokens + output_tokens + cache_write), 0)"
+
+func poolTokensSince(db *gorm.DB, poolID uint, since time.Time) int64 {
+	var used int64
+	db.Model(&database.UsageLog{}).
+		Joins("JOIN claude_accounts ON usage_logs.account_id = claude_accounts.id").
+		Joins("JOIN account_pools ON account_pools.account_id = claude_accounts.id").
+		Where("account_pools.pool_id = ? AND usage_logs.created_at >= ?", poolID, since).
+		Select("COALESCE(SUM(usage_logs.input_tokens + usage_logs.output_tokens + usage_logs.cache_write), 0)").
+		Row().Scan(&used)
+	return used
+}
+
+// poolsWithinQuota returns the pools in poolIDs that have not used up their daily or monthly quota.
+func poolsWithinQuota(poolIDs []uint, quotaPools []database.Pool, dailyUsed, monthlyUsed map[uint]int64) []uint {
+	exhausted := make(map[uint]bool, len(quotaPools))
+	for _, p := range quotaPools {
+		if (p.DailyTokenQuota > 0 && dailyUsed[p.ID] >= int64(p.DailyTokenQuota)) ||
+			(p.MonthlyTokenQuota > 0 && monthlyUsed[p.ID] >= int64(p.MonthlyTokenQuota)) {
+			exhausted[p.ID] = true
+		}
+	}
+	usable := make([]uint, 0, len(poolIDs))
+	for _, id := range poolIDs {
+		if !exhausted[id] {
+			usable = append(usable, id)
+		}
+	}
+	return usable
+}
+
 // estimateMonthlyCost queries the DB for cost since monthStart.
 func estimateMonthlyCost(db *gorm.DB, userID uint, monthStart time.Time) float64 {
 	type row struct {
 		Model        string
 		InputTokens  int64
 		OutputTokens int64
+		CacheRead    int64
+		CacheWrite   int64
 	}
 	var rows []row
 	db.Model(&database.UsageLog{}).
 		Where("user_id = ? AND created_at >= ?", userID, monthStart).
-		Select("model, COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens").
+		Select("model, COALESCE(SUM(input_tokens),0) as input_tokens, COALESCE(SUM(output_tokens),0) as output_tokens, " +
+			"COALESCE(SUM(cache_read),0) as cache_read, COALESCE(SUM(cache_write),0) as cache_write").
 		Group("model").Scan(&rows)
 	var total float64
 	for _, r := range rows {
-		total += estimateCostRow(r.Model, r.InputTokens, r.OutputTokens)
+		total += estimateCostRow(r.Model, r.InputTokens, r.OutputTokens, r.CacheRead, r.CacheWrite)
 	}
 	return total
 }
 
-// estimateCostRow is a lightweight copy of the pricing logic from handlers/stats.go.
-var modelPricingProxy = map[string][2]float64{
-	"claude-opus-4":     {15.0, 75.0},
-	"claude-sonnet-4":   {3.0, 15.0},
-	"claude-haiku-4":    {0.80, 4.0},
-	"claude-3-5-sonnet": {3.0, 15.0},
-	"claude-3-5-haiku":  {0.80, 4.0},
-	"claude-3-opus":     {15.0, 75.0},
-	"claude-3-sonnet":   {3.0, 15.0},
-	"claude-3-haiku":    {0.25, 1.25},
+// modelPrice is in USD per million tokens. Cache writes are billed at 1.25x input
+// (5-minute TTL); cache-read multipliers differ by model, so they are listed.
+type modelPrice struct {
+	match                    string
+	input, output, cacheRead float64
 }
 
-func estimateCostRow(model string, input, output int64) float64 {
-	for substr, price := range modelPricingProxy {
-		if strings.Contains(model, substr) {
-			return float64(input)/1_000_000*price[0] + float64(output)/1_000_000*price[1]
+// Ordered most specific first, since matching is by substring ("claude-opus-5" must not price "claude-opus-5-5").
+var modelPricingProxy = []modelPrice{
+	{"claude-fable-5-2", 8, 40, 0.20},
+	{"claude-mythos-5-2", 8, 40, 0.20},
+	{"claude-fable-5-1", 10, 50, 0.25},
+	{"claude-mythos-5-1", 10, 50, 0.25},
+	{"claude-fable-5", 10, 50, 1.00},
+	{"claude-mythos-5", 10, 50, 1.00},
+	{"claude-opus-5-5", 4, 20, 0.20},
+	{"claude-opus-5", 5, 25, 0.50},
+	{"claude-opus-4-8", 5, 25, 0.50},
+	{"claude-opus-4-7", 5, 25, 0.50},
+	{"claude-opus-4-6", 5, 25, 0.50},
+	{"claude-opus-4", 15, 75, 1.50},
+	{"claude-sonnet-5-5", 2, 10, 0.10},
+	{"claude-sonnet-5", 2, 10, 0.20},
+	{"claude-sonnet-4", 3, 15, 0.30},
+	{"claude-haiku-5-5", 0.10, 0.50, 0.01},
+	{"claude-haiku-4-5", 1, 5, 0.10},
+	{"claude-3-7-sonnet", 3, 15, 0.30},
+	{"claude-3-5-sonnet", 3, 15, 0.30},
+	{"claude-3-5-haiku", 0.80, 4, 0.08},
+	{"claude-3-opus", 15, 75, 1.50},
+	{"claude-3-sonnet", 3, 15, 0.30},
+	{"claude-3-haiku", 0.25, 1.25, 0.03},
+}
+
+// unknownModelPrice charges models missing from the table at the top rate, so a
+// new or unlisted model cannot be used to spend a budget for free.
+var unknownModelPrice = modelPrice{"", 10, 50, 1.00}
+
+func estimateCostRow(model string, input, output, cacheRead, cacheWrite int64) float64 {
+	price := unknownModelPrice
+	for _, p := range modelPricingProxy {
+		if strings.Contains(model, p.match) {
+			price = p
+			break
 		}
 	}
-	return 0
+	return (float64(input)*price.input +
+		float64(output)*price.output +
+		float64(cacheRead)*price.cacheRead +
+		float64(cacheWrite)*price.input*1.25) / 1_000_000
 }
 
 // claudeCodeLeadPrefixes mark the system blocks Claude Code sends first: an
