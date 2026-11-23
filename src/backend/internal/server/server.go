@@ -220,6 +220,7 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		convsH := handlers.NewConversationsHandler(s.db)
 		r.Get("/api/admin/conversations", convsH.List)
 		r.Get("/api/admin/conversations/export", convsH.Export)
+		r.Get("/api/admin/conversations/by-usage/{id}", convsH.GetByUsage)
 		r.Get("/api/admin/conversations/{id}", convsH.Get)
 		r.Get("/api/admin/conversations/{id}/export", convsH.ExportOne)
 

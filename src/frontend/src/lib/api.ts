@@ -585,6 +585,7 @@ export const conversationsApi = {
     return get<ConversationPage>(`/admin/conversations?${q}`)
   },
   get:       (id: number) => get<ConversationDetail>(`/admin/conversations/${id}`),
+  getByUsage: (usageLogId: number) => get<ConversationDetail>(`/admin/conversations/by-usage/${usageLogId}`),
   exportURL: () => `/api/admin/conversations/export`,
   exportOneURL: (id: number) => `/api/admin/conversations/${id}/export`,
 }

@@ -86,8 +86,23 @@ func (h *ConversationsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.writeDetail(w, h.db.Preload("User").Where("id = ?", id))
+}
+
+// GET /api/admin/conversations/by-usage/{id} — look up the conversation by its usage log ID
+func (h *ConversationsHandler) GetByUsage(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid id"))
+		return
+	}
+
+	h.writeDetail(w, h.db.Preload("User").Where("usage_log_id = ?", id))
+}
+
+func (h *ConversationsHandler) writeDetail(w http.ResponseWriter, q *gorm.DB) {
 	var log database.ConversationLog
-	if err := h.db.Preload("User").First(&log, id).Error; err != nil {
+	if err := q.First(&log).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("conversation not found"))
 		return
 	}
