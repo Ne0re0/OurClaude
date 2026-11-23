@@ -17,9 +17,19 @@ func estimateTokens(s string) int {
 //   - last tool definition if the total tools size > cacheInjectThreshold tokens
 // Returns the original body unmodified if it cannot be parsed or no injection
 // is needed.
+//
+// If the client already placed any cache_control breakpoint (Claude Code always
+// does), the body is left untouched: the API accepts at most 4 breakpoints and
+// requires 1h-TTL blocks to precede 5m ones, so adding our own on top of the
+// client's breaks requests with "A maximum of 4 blocks with cache_control may
+// be provided. Found 5."
 func injectPromptCache(body []byte) []byte {
 	var req map[string]json.RawMessage
 	if err := json.Unmarshal(body, &req); err != nil {
+		return body
+	}
+
+	if countCacheControl(req) > 0 {
 		return body
 	}
 
@@ -85,4 +95,32 @@ func injectPromptCache(body []byte) []byte {
 		return body
 	}
 	return result
+}
+
+// countCacheControl returns how many cache_control breakpoints the request
+// already carries across tools, system blocks and message content blocks.
+func countCacheControl(req map[string]json.RawMessage) int {
+	n := 0
+	countBlocks := func(raw json.RawMessage) {
+		var blocks []map[string]json.RawMessage
+		if json.Unmarshal(raw, &blocks) != nil {
+			return // string form or not an array: no breakpoints possible
+		}
+		for _, b := range blocks {
+			if cc, ok := b["cache_control"]; ok && string(cc) != "null" {
+				n++
+			}
+		}
+	}
+	countBlocks(req["tools"])
+	countBlocks(req["system"])
+	var msgs []struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(req["messages"], &msgs) == nil {
+		for _, m := range msgs {
+			countBlocks(m.Content)
+		}
+	}
+	return n
 }
