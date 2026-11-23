@@ -33,7 +33,21 @@ func NewUserSelfHandler(db *gorm.DB, distDir string, enc *crypto.Encryptor) *Use
 	return &UserSelfHandler{db: db, distDir: distDir, enc: enc}
 }
 
+// extractUser authenticates the request's sk-proxy token and rejects expired tokens.
 func (h *UserSelfHandler) extractUser(r *http.Request) (*database.User, error) {
+	user, err := h.extractUserAllowExpired(r)
+	if err != nil {
+		return nil, err
+	}
+	if user.TokenExpiresAt != nil && time.Now().After(*user.TokenExpiresAt) {
+		return nil, errInvalidToken
+	}
+	return user, nil
+}
+
+// extractUserAllowExpired is for read-only status endpoints, so `ourclaude status`
+// can still tell a user that their token has expired.
+func (h *UserSelfHandler) extractUserAllowExpired(r *http.Request) (*database.User, error) {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {
 		return nil, errInvalidToken
@@ -52,7 +66,7 @@ func (h *UserSelfHandler) extractUser(r *http.Request) (*database.User, error) {
 
 // GET /api/user/me — returns user info with quota usage (no token exposed)
 func (h *UserSelfHandler) Me(w http.ResponseWriter, r *http.Request) {
-	user, err := h.extractUser(r)
+	user, err := h.extractUserAllowExpired(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, errResp("invalid token"))
 		return
@@ -90,7 +104,7 @@ func (h *UserSelfHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/user/usage — returns this user's usage stats
 func (h *UserSelfHandler) Usage(w http.ResponseWriter, r *http.Request) {
-	user, err := h.extractUser(r)
+	user, err := h.extractUserAllowExpired(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, errResp("invalid token"))
 		return
@@ -161,7 +175,7 @@ func (h *UserSelfHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := strings.ReplaceAll(uuid.New().String(), "-", "")
-	patched := patchBinaryToken(data, key)
+	patched := patchBinary(data, key, r)
 
 	// Record the download.
 	h.db.Create(&database.UserBinaryDownload{
@@ -191,6 +205,8 @@ func (h *UserSelfHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to rotate token"))
 		return
 	}
+	// Setup links hand out the current token, so they must die with the old one.
+	h.db.Where("user_id = ?", user.ID).Delete(&database.SetupToken{})
 
 	writeJSON(w, http.StatusOK, map[string]string{"api_token": newToken})
 }
@@ -334,7 +350,7 @@ func (h *UserSelfHandler) DeleteOwnedAccount(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *UserSelfHandler) PoolStatus(w http.ResponseWriter, r *http.Request) {
-	user, err := h.extractUser(r)
+	user, err := h.extractUserAllowExpired(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, errResp("invalid token"))
 		return

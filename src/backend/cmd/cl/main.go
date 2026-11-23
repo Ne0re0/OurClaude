@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,12 +27,52 @@ import (
 // The sentinel "CLBINTOK:" followed by 32 hex chars is replaced with a unique key.
 var binaryToken = "CLBINTOK:00000000000000000000000000000000"
 
+// originSlot is overwritten by the server with its own URL (space-padded to 200
+// bytes) when it serves this binary. `ourclaude update` downloads only from that
+// origin, so an edited config file cannot point a root update at another server.
+// The marker is skipped by length below, never spelled out again, so the server's
+// byte search can only find this one copy.
+const (
+	originPad  = "                                        " // 40 spaces
+	originSlot = "CLBINURL:" + originPad + originPad + originPad + originPad + originPad
+)
+
+var binaryOrigin = originSlot
+
+func stampedOrigin() string {
+	return strings.TrimSpace(binaryOrigin[len("CLBINURL:"):])
+}
+
+// requireSecureURL refuses plain-HTTP servers except on this machine: the API token,
+// shared Claude credentials and update binaries would otherwise travel unencrypted.
+func requireSecureURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid server URL %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) || os.Getenv("OURCLAUDE_ALLOW_HTTP") == "1" {
+			return nil
+		}
+		return fmt.Errorf("refusing plain http:// for %s: your token and Claude credentials would be sent unencrypted (use https://, or set OURCLAUDE_ALLOW_HTTP=1 on a network you trust)", host)
+	}
+	return fmt.Errorf("server URL must start with https://")
+}
+
 const configFile = ".claude/proxy.json"
 const claudeCredsFile = ".claude/.credentials.json"
 
 type Config struct {
 	ServerURL string `json:"server_url"`
 	Token     string `json:"token"`
+	// SyncCredentials says whether this machine shared its Claude account and so may
+	// receive that account's refreshed tokens. Unset in configs written before the
+	// field existed, which keep syncing as they always did.
+	SyncCredentials *bool `json:"sync_credentials,omitempty"`
 }
 
 // claudeCredentials mirrors ~/.claude/.credentials.json
@@ -160,9 +201,12 @@ func proxyHost(rawURL string) string {
 }
 
 func main() {
-	// Always sync credentials if logged in (silent, best-effort)
-	if cfg, err := loadConfig(); err == nil {
-		syncOwnedAccount(cfg)
+	// Sync credentials if logged in (silent, best-effort). Not under sudo: as root the
+	// config may come from the user's writable home and must not drive writes.
+	if os.Geteuid() != 0 || os.Getenv("SUDO_USER") == "" {
+		if cfg, err := loadConfig(); err == nil {
+			syncOwnedAccount(cfg)
+		}
 	}
 
 	args := os.Args[1:]
@@ -188,7 +232,7 @@ func main() {
 	case "uninstall":
 		cmdUninstall()
 	case "mcp-sync":
-		cmdMCPSync()
+		cmdMCPSync(args[1:])
 	case "mythos":
 		if len(args) < 2 || (args[1] != "5.1" && args[1] != "5.2") {
 			fmt.Fprintln(os.Stderr, "usage: ourclaude mythos <5.1|5.2> [claude-args...]")
@@ -210,7 +254,7 @@ func main() {
 func cmdLogin(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: ourclaude login <server_url> [token] [--auto-share]")
-		fmt.Fprintln(os.Stderr, "example: ourclaude login http://proxy.example.com:8080")
+		fmt.Fprintln(os.Stderr, "example: ourclaude login https://proxy.example.com")
 		os.Exit(1)
 	}
 
@@ -228,8 +272,8 @@ func cmdLogin(args []string) {
 
 	serverURL := strings.TrimRight(args[0], "/")
 
-	if _, err := url.Parse(serverURL); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid server URL: %v\n", err)
+	if err := requireSecureURL(serverURL); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -285,9 +329,11 @@ func cmdLogin(args []string) {
 		}
 	}
 
+	noSync := false
 	cfg := &Config{
-		ServerURL: serverURL,
-		Token:     token,
+		ServerURL:       serverURL,
+		Token:           token,
+		SyncCredentials: &noSync,
 	}
 
 	if err := saveConfig(cfg); err != nil {
@@ -306,13 +352,13 @@ func cmdLogin(args []string) {
 func cmdInit(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: ourclaude init <server_url> [token]")
-		fmt.Fprintln(os.Stderr, "example: ourclaude init http://proxy.example.com:8080")
+		fmt.Fprintln(os.Stderr, "example: ourclaude init https://proxy.example.com")
 		os.Exit(1)
 	}
 
 	serverURL := strings.TrimRight(args[0], "/")
-	if _, err := url.Parse(serverURL); err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid server URL: %v\n", err)
+	if err := requireSecureURL(serverURL); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -342,7 +388,8 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
-	cfg := &Config{ServerURL: serverURL, Token: token}
+	noSync := false
+	cfg := &Config{ServerURL: serverURL, Token: token, SyncCredentials: &noSync}
 	if err := saveConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
 		os.Exit(1)
@@ -439,6 +486,12 @@ func offerCredentialImport(serverURL, token string, autoShare bool) {
 	action := "imported"
 	if resp.StatusCode == http.StatusOK {
 		action = "updated"
+	}
+	// This machine shared the account, so it may receive the account's refreshed tokens.
+	if cfg, err := loadConfig(); err == nil {
+		enabled := true
+		cfg.SyncCredentials = &enabled
+		saveConfig(cfg)
 	}
 	fmt.Printf("Account %s (id: %d). The proxy will keep your local credentials in sync.\n", action, result.AccountID)
 	fmt.Printf("\nYou can now use: ourclaude <claude-args>\n")
@@ -641,7 +694,13 @@ func formatTokens(n int64) string {
 
 // syncOwnedAccount silently fetches the current credentials from the proxy
 // isProxyReachable checks if the proxy server responds within 3 seconds.
-func cmdMCPSync() {
+func cmdMCPSync(args []string) {
+	acceptAll := len(args) > 0 && (args[0] == "--yes" || args[0] == "-y")
+	if !acceptAll && !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(os.Stderr, "ourclaude mcp-sync asks before adding each server; run it in a terminal, or pass --yes to accept all.")
+		os.Exit(1)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ourclaude: not logged in. Run: ourclaude login <server_url>")
@@ -686,39 +745,69 @@ func cmdMCPSync() {
 		return
 	}
 
-	// Build mcpServers config for Claude settings
-	mcpServers := map[string]interface{}{}
+	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	existing := map[string]interface{}{}
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		json.Unmarshal(data, &existing)
+	}
+	// Merge: the user's own MCP servers stay; accepted proxy servers are added by name.
+	mcpServers, _ := existing["mcpServers"].(map[string]interface{})
+	if mcpServers == nil {
+		mcpServers = map[string]interface{}{}
+	}
+
+	fmt.Println("The proxy offers these MCP servers. Command servers run on this machine with your permissions.")
+	stdin := bufio.NewScanner(os.Stdin)
+	added := 0
 	for _, s := range servers {
 		entry := map[string]interface{}{}
+		var description string
 		if s.Type == "http" || s.URL != "" {
 			entry["url"] = s.URL
+			description = "connects to " + s.URL
 		} else {
 			entry["command"] = s.Command
+			var cmdArgs []string
 			if s.Args != "" {
-				var args []string
-				json.Unmarshal([]byte(s.Args), &args)
-				if len(args) > 0 {
-					entry["args"] = args
+				json.Unmarshal([]byte(s.Args), &cmdArgs)
+				if len(cmdArgs) > 0 {
+					entry["args"] = cmdArgs
 				}
 			}
+			description = "runs: " + strings.TrimSpace(s.Command+" "+strings.Join(cmdArgs, " "))
 		}
 		if s.Env != "" {
 			var env map[string]string
 			json.Unmarshal([]byte(s.Env), &env)
 			if len(env) > 0 {
 				entry["env"] = env
+				keys := make([]string, 0, len(env))
+				for k := range env {
+					keys = append(keys, k)
+				}
+				description += " (env: " + strings.Join(keys, ", ") + ")"
+			}
+		}
+
+		fmt.Printf("\n  %s\n    %s\n", s.Name, description)
+		if _, mine := mcpServers[s.Name]; mine {
+			fmt.Printf("    replaces your existing %q entry\n", s.Name)
+		}
+		if !acceptAll {
+			fmt.Printf("  Add %s? [y/N] ", s.Name)
+			stdin.Scan()
+			if answer := strings.ToLower(strings.TrimSpace(stdin.Text())); answer != "y" && answer != "yes" {
+				continue
 			}
 		}
 		mcpServers[s.Name] = entry
+		added++
 	}
 
-	// Merge into ~/.claude/settings.json
-	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
-	existing := map[string]interface{}{}
-	if data, err := os.ReadFile(settingsPath); err == nil {
-		json.Unmarshal(data, &existing)
+	if added == 0 {
+		fmt.Println("\nNo MCP servers added.")
+		return
 	}
-
 	existing["mcpServers"] = mcpServers
 
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0700); err != nil {
@@ -731,7 +820,7 @@ func cmdMCPSync() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Synced %d MCP server(s) to ~/.claude/settings.json\n", len(servers))
+	fmt.Printf("\nAdded %d MCP server(s) to ~/.claude/settings.json\n", added)
 }
 
 func sudoUserHome() string {
@@ -762,6 +851,10 @@ func isProxyReachable(cfg *Config) bool {
 // and updates ~/.claude/.credentials.json if they differ. This keeps the
 // owner's local Claude CLI in sync after proxy token rotations.
 func syncOwnedAccount(cfg *Config) {
+	// Only the machine that shared the account may have its Claude login rewritten.
+	if cfg.SyncCredentials != nil && !*cfg.SyncCredentials {
+		return
+	}
 	req, err := http.NewRequest(http.MethodGet, cfg.ServerURL+"/api/user/owned-account", nil)
 	if err != nil {
 		return
@@ -965,8 +1058,23 @@ func cmdUpdate() {
 		os.Exit(1)
 	}
 
+	// Update only from the server that served this binary; the config file is
+	// user-writable and must not decide what gets installed as root.
+	base := cfg.ServerURL
+	if origin := stampedOrigin(); origin != "" {
+		base = origin
+	} else if os.Geteuid() == 0 && os.Getenv("SUDO_USER") != "" {
+		fmt.Fprintln(os.Stderr, "ourclaude: this binary has no recorded origin server, so it will not update as root from a user-editable config.")
+		fmt.Fprintln(os.Stderr, "Reinstall it with the install command from your setup page.")
+		os.Exit(1)
+	}
+	if err := requireSecureURL(base); err != nil {
+		fmt.Fprintf(os.Stderr, "ourclaude: %v\n", err)
+		os.Exit(1)
+	}
+
 	platform := runtime.GOOS + "-" + runtime.GOARCH
-	updateURL := cfg.ServerURL + "/api/user/update?platform=" + platform
+	updateURL := base + "/api/user/update?platform=" + platform
 
 	req, err := http.NewRequest(http.MethodGet, updateURL, nil)
 	if err != nil {
@@ -1022,7 +1130,9 @@ func cmdUpdate() {
 	}
 
 	// Extract the embedded key from the sentinel (first 8 chars shown).
-	key := strings.TrimPrefix(binaryToken, "CLBINTOK:")
+	// Skip the marker by length: spelling it out would put a second copy in the
+	// binary for the server's patcher to find.
+	key := binaryToken[len("CLBINTOK:"):]
 	if len(key) > 8 {
 		key = key[:8] + "..."
 	}
@@ -1312,7 +1422,7 @@ Usage:
   ourclaude usage                        Show your token usage stats
   ourclaude update                       Download and replace with latest binary
   ourclaude uninstall                    Remove ourclaude binary and config
-  ourclaude mcp-sync                     Sync MCP servers from proxy to local settings
+  ourclaude mcp-sync [--yes]             Add MCP servers from the proxy (asks for each)
   ourclaude mythos <5.1|5.2> [args...]   Run Claude with the selected Mythos model
   ourclaude [claude-args...]             Run claude through the proxy
 

@@ -49,7 +49,7 @@ const PLATFORMS = [
 
 function RTKSection() {
   const [open, setOpen] = useState(false)
-  const rtkCmd = 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | bash && rtk init --global'
+  const rtkCmd = 'curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/v1.2.1/install.sh | RTK_VERSION=v1.2.1 sh && rtk init --global'
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 mb-4">
       <button onClick={() => setOpen(!open)} className="flex items-center gap-2 w-full text-left">

@@ -41,21 +41,33 @@ func NewDownloadsHandler(db *gorm.DB, distDir string) *DownloadsHandler {
 	return &DownloadsHandler{db: db, distDir: distDir}
 }
 
-// patchBinaryToken replaces the placeholder key inside a cl binary with a unique token.
-// Returns the original data unchanged if the sentinel is not found.
-func patchBinaryToken(data []byte, key string) []byte {
-	sentinel := []byte(binarySentinel)
-	idx := bytes.Index(data, sentinel)
-	if idx < 0 {
-		return data
-	}
-	tokenStart := idx + len(sentinel)
-	if tokenStart+binaryKeyLen > len(data) {
-		return data
-	}
+// originSentinel marks the slot where the CLI reads the server it may update from.
+const originSentinel = "CLBINURL:"
+const originSlotLen = 200
+
+// Patching only matches a slot still holding its placeholder: a bare marker can
+// also appear elsewhere in a binary, and writing after it corrupts unrelated data.
+var (
+	keyPlaceholder    = []byte(binarySentinel + strings.Repeat("0", binaryKeyLen))
+	originPlaceholder = []byte(originSentinel + strings.Repeat(" ", originSlotLen))
+)
+
+// patchBinary embeds a unique tracking key and this server's public URL into a cl
+// binary; `ourclaude update` downloads only from that URL. Slots that are missing
+// (older binaries) are left alone.
+func patchBinary(data []byte, key string, r *http.Request) []byte {
 	patched := make([]byte, len(data))
 	copy(patched, data)
-	copy(patched[tokenStart:tokenStart+binaryKeyLen], []byte(key[:binaryKeyLen]))
+	if idx := bytes.Index(patched, keyPlaceholder); idx >= 0 && len(key) >= binaryKeyLen {
+		start := idx + len(binarySentinel)
+		copy(patched[start:start+binaryKeyLen], key[:binaryKeyLen])
+	}
+	if origin, ok := publicServerURL(r); ok && len(origin) <= originSlotLen {
+		if idx := bytes.Index(patched, originPlaceholder); idx >= 0 {
+			start := idx + len(originSentinel)
+			copy(patched[start:start+originSlotLen], origin+strings.Repeat(" ", originSlotLen-len(origin)))
+		}
+	}
 	return patched
 }
 
@@ -102,7 +114,7 @@ func (h *DownloadsHandler) AuthDownload(w http.ResponseWriter, r *http.Request) 
 	}
 
 	key := newBinaryKey()
-	patched := patchBinaryToken(data, key)
+	patched := patchBinary(data, key, r)
 
 	dlName := "ourclaude"
 	if strings.HasSuffix(filename, ".exe") {
@@ -151,7 +163,7 @@ func (h *DownloadsHandler) PreAuthDownload(w http.ResponseWriter, r *http.Reques
 	}
 
 	key := newBinaryKey()
-	patched := patchBinaryToken(data, key)
+	patched := patchBinary(data, key, r)
 
 	// Store the binary key on the download link record.
 	h.db.Model(&database.DownloadLink{}).Where("id = ?", link.ID).Update("binary_key", key)
