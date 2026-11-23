@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"strings"
@@ -80,6 +81,7 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.Recoverer)
+	r.Use(securityHeaders)
 	r.Use(chimiddleware.RequestID)
 	origins := strings.Split(s.cfg.CORSOrigins, ",")
 	for i := range origins {
@@ -94,11 +96,9 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	}))
 	// Health check + Prometheus metrics (public)
 	r.Get("/healthz", s.healthCheck())
-	r.Handle("/metrics", promhttp.Handler())
+	r.Handle("/metrics", localOnly(promhttp.Handler()))
 
 	// API documentation (public)
-	r.Get("/docs", handlers.DocsUI)
-	r.Get("/docs/openapi.json", handlers.DocsSpec)
 
 	// Cookie-authenticated routes reject cross-origin state changes (Sec-Fetch-Site / Origin
 	// checks): SameSite=Lax alone still lets sibling subdomains send the admin cookie.
@@ -108,10 +108,6 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	authH := handlers.NewAuthHandler(s.db, s.cfg)
 	r.With(crossOrigin.Handler).Post("/api/auth/login", authH.Login)
 	r.With(crossOrigin.Handler).Post("/api/auth/logout", authH.Logout)
-
-	// Public: OAuth token exchange proxy (avoids CORS from browser)
-	oauthH := handlers.NewOAuthHandler()
-	r.Post("/api/oauth/token", oauthH.ExchangeToken)
 
 	// Public: use an invite
 	invitesH := handlers.NewInvitesHandler(s.db)
@@ -125,8 +121,17 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(crossOrigin.Handler)
 		r.Use(authMw)
+		r.Use(middleware.ReadOnlyForViewers)
 
 		r.Get("/api/auth/me", authH.Me)
+
+		// API documentation (the route map is not public)
+		r.Get("/docs", handlers.DocsUI)
+		r.Get("/docs/openapi.json", handlers.DocsSpec)
+
+		// OAuth token exchange relay for the Accounts page (avoids CORS from the browser)
+		oauthH := handlers.NewOAuthHandler()
+		r.Post("/api/oauth/token", oauthH.ExchangeToken)
 		r.Post("/api/auth/totp/setup", authH.TOTPSetup)
 		r.Post("/api/auth/totp/enable", authH.TOTPEnable)
 		r.Post("/api/auth/totp/disable", authH.TOTPDisable)
@@ -308,6 +313,32 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	r.Get("/*", s.frontendHandler())
 
 	return r
+}
+
+// securityHeaders forbids framing (clickjacking), MIME sniffing, and Referer
+// leaks of token-bearing URLs such as /setup/{token} and /invite/{token}.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// localOnly serves a handler only to clients on loopback or private networks
+// (e.g. a scraper on the host), not to the internet through the reverse proxy.
+func localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := net.ParseIP(middleware.ClientIP(r))
+		if ip == nil || !(ip.IsLoopback() || ip.IsPrivate()) {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) healthCheck() http.HandlerFunc {

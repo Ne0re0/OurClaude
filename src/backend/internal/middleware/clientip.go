@@ -11,12 +11,8 @@ import (
 // reverse proxy such as nginx reaching the Docker container); from any other
 // peer they could be forged, so the peer address is used as is.
 func ClientIP(r *http.Request) string {
-	peer := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(peer); err == nil {
-		peer = host
-	}
-	peerIP := net.ParseIP(peer)
-	if peerIP == nil || !(peerIP.IsLoopback() || peerIP.IsPrivate()) {
+	peer, trusted := peerAddr(r)
+	if !trusted {
 		return peer
 	}
 
@@ -31,4 +27,24 @@ func ClientIP(r *http.Request) string {
 		}
 	}
 	return peer
+}
+
+// RequestIsHTTPS reports whether the client reached us over HTTPS, directly or
+// through a trusted reverse proxy that terminated TLS (X-Forwarded-Proto).
+func RequestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	_, trusted := peerAddr(r)
+	return trusted && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// peerAddr returns the direct peer's IP and whether it may set forwarding headers.
+func peerAddr(r *http.Request) (string, bool) {
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
+	}
+	ip := net.ParseIP(peer)
+	return peer, ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }

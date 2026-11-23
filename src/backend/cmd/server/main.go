@@ -19,6 +19,15 @@ func main() {
 	log.Printf("  Proxy   → http://0.0.0.0:%s/proxy", cfg.WebPort)
 	log.Printf("  DB      → %s (%s)", cfg.DBPath, cfg.DBType)
 
+	// Warn only: refusing to start could push operators to rotate JWT_SECRET, which
+	// would make data encrypted under the fallback key unreadable.
+	if cfg.JWTSecret == "change-me-in-production-please" {
+		log.Printf("WARNING: JWT_SECRET is the built-in default; anyone can forge admin sessions. Set a random JWT_SECRET.")
+	}
+	if cfg.EncryptionKey == cfg.JWTSecret {
+		log.Printf("WARNING: ENCRYPTION_KEY is unset, so stored account credentials are encrypted with JWT_SECRET; one leaked secret exposes both.")
+	}
+
 	db, err := database.New(cfg.DBType, cfg.DBPath, cfg.PostgresDSN)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)

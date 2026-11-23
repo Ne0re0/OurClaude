@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"claude-proxy/internal/database"
+	"claude-proxy/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -27,6 +28,11 @@ func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.Preload("Pools").Find(&users).Error; err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to fetch users"))
 		return
+	}
+	if middleware.IsViewer(r.Context()) {
+		for i := range users {
+			users[i].APIToken = ""
+		}
 	}
 	writeJSON(w, http.StatusOK, users)
 }
@@ -93,6 +99,9 @@ func (h *UsersHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.Preload("Pools").First(&user, id).Error; err != nil {
 		writeJSON(w, http.StatusNotFound, errResp("user not found"))
 		return
+	}
+	if middleware.IsViewer(r.Context()) {
+		user.APIToken = ""
 	}
 	writeJSON(w, http.StatusOK, user)
 }
@@ -225,6 +234,8 @@ func (h *UsersHandler) RotateToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to rotate token"))
 		return
 	}
+	// Setup links hand out the current token, so they must die with the old one.
+	h.db.Where("user_id = ?", id).Delete(&database.SetupToken{})
 
 	logAudit(h.db, r, "rotate_token", "user:"+strconv.Itoa(int(id)), "")
 	writeJSON(w, http.StatusOK, map[string]string{"api_token": token})

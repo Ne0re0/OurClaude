@@ -17,7 +17,7 @@ func NewOAuthHandler() *OAuthHandler {
 }
 
 func (h *OAuthHandler) ExchangeToken(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("failed to read request body"))
 		return

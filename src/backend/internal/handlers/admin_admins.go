@@ -25,26 +25,6 @@ func NewAdminsHandler(db *gorm.DB, cfg *config.Config) *AdminsHandler {
 	return &AdminsHandler{db: db, cfg: cfg}
 }
 
-func requireSuperAdmin(w http.ResponseWriter, r *http.Request) bool {
-	claims := middleware.GetAdmin(r.Context())
-	if claims == nil {
-		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
-		return false
-	}
-	var admin database.Admin
-	if err := claims.AdminID; err == 0 {
-		writeJSON(w, http.StatusForbidden, errResp("forbidden"))
-		return false
-	}
-	// Look up role from DB (claims don't carry role)
-	var a database.Admin
-	if db, ok := r.Context().Value("db").(*gorm.DB); ok {
-		db.First(&a, claims.AdminID)
-	}
-	_ = admin
-	return true // role check via DB in handler using h.db
-}
-
 // GET /api/admin/admins
 func (h *AdminsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if !h.isSuperAdmin(r) {

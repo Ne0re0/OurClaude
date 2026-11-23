@@ -100,6 +100,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   middleware.RequestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(h.cfg.JWTExpiry.Seconds()),
 	})
@@ -133,6 +134,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   middleware.RequestIsHTTPS(r),
 		MaxAge:   -1,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
@@ -162,6 +164,17 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetAdmin(r.Context())
+
+	// Re-keying an active 2FA without a code would let anyone holding a session take it over.
+	var admin database.Admin
+	if err := h.db.Select("id", "totp_enabled").First(&admin, claims.AdminID).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, errResp("admin not found"))
+		return
+	}
+	if admin.TOTPEnabled {
+		writeJSON(w, http.StatusBadRequest, errResp("2FA is already enabled; disable it with a current code first"))
+		return
+	}
 
 	secret, qrURL, err := auth.GenerateTOTPSecret(claims.Username)
 	if err != nil {
@@ -290,6 +303,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   middleware.RequestIsHTTPS(r),
 		MaxAge:   -1,
 	})
 
