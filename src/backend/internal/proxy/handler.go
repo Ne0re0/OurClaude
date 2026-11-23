@@ -1089,18 +1089,78 @@ func estimateCostRow(model string, input, output int64) float64 {
 	return 0
 }
 
+// claudeCodeLeadPrefixes mark the system blocks Claude Code sends first: an
+// optional billing header block, then the identity block. Anthropic only
+// accepts OAuth (subscription) credentials when the system prompt still starts
+// with these, so the injected prompt goes right after them instead of
+// replacing or preceding them.
+var claudeCodeLeadPrefixes = []string{
+	"x-anthropic-billing-header:",
+	"You are Claude Code, Anthropic's official CLI for Claude",
+}
+
+func isClaudeCodeLeadBlock(text string) bool {
+	for _, p := range claudeCodeLeadPrefixes {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// injectSystemPrompt adds prefix to the request's system prompt as its own
+// text block. It accepts both forms the Messages API allows: a plain string
+// and an array of content blocks (the form Claude Code always sends). Existing
+// blocks, including their cache_control markers, are kept untouched.
 func injectSystemPrompt(body []byte, prefix string) []byte {
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
 		return body
 	}
-	existing, _ := parsed["system"].(string)
-	if existing != "" {
-		parsed["system"] = prefix + "\n\n" + existing
-	} else {
-		parsed["system"] = prefix
+
+	var blocks []map[string]json.RawMessage
+	raw, present := req["system"]
+	var str string
+	switch {
+	case !present || string(raw) == "null":
+		// No system prompt yet: the injected text becomes the whole prompt.
+	case json.Unmarshal(raw, &str) == nil:
+		if str != "" {
+			textRaw, _ := json.Marshal(str)
+			blocks = []map[string]json.RawMessage{{"type": json.RawMessage(`"text"`), "text": textRaw}}
+		}
+	case json.Unmarshal(raw, &blocks) == nil:
+	default:
+		return body
 	}
-	result, err := json.Marshal(parsed)
+
+	insertAt := 0
+	for insertAt < len(blocks) {
+		var text string
+		if json.Unmarshal(blocks[insertAt]["text"], &text) != nil || !isClaudeCodeLeadBlock(text) {
+			break
+		}
+		insertAt++
+	}
+
+	prefixRaw, err := json.Marshal(prefix)
+	if err != nil {
+		return body
+	}
+	injected := map[string]json.RawMessage{"type": json.RawMessage(`"text"`), "text": prefixRaw}
+
+	out := make([]map[string]json.RawMessage, 0, len(blocks)+1)
+	out = append(out, blocks[:insertAt]...)
+	out = append(out, injected)
+	out = append(out, blocks[insertAt:]...)
+
+	sysRaw, err := json.Marshal(out)
+	if err != nil {
+		return body
+	}
+	req["system"] = sysRaw
+
+	result, err := json.Marshal(req)
 	if err != nil {
 		return body
 	}
