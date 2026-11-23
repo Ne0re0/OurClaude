@@ -3,6 +3,7 @@ package integration_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -317,6 +318,50 @@ func TestMultiUseInvite(t *testing.T) {
 	}
 	if !invites[0].MultiUse || invites[0].UseCount != 2 || invites[0].UsedAt != nil {
 		t.Errorf("expected active multi-use invite with use_count=2, got %+v", invites[0])
+	}
+}
+
+func TestInviteUseLeadsToAutoSetup(t *testing.T) {
+	ts, _ := setupServer(t)
+	cookies := login(t, ts)
+
+	createResp := postJSON(t, ts, "/api/admin/invites", map[string]interface{}{"expires_in_hours": 24}, cookies)
+	var invite struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&invite)
+
+	useResp := postJSON(t, ts, "/api/invite/use", map[string]string{"token": invite.Token, "name": "Carol"}, nil)
+	if useResp.StatusCode != http.StatusCreated {
+		t.Fatalf("use invite: expected 201, got %d", useResp.StatusCode)
+	}
+	var result struct {
+		APIToken string `json:"api_token"`
+		SetupURL string `json:"setup_url"`
+	}
+	json.NewDecoder(useResp.Body).Decode(&result)
+	setupToken, ok := strings.CutPrefix(result.SetupURL, "/setup/")
+	if !ok || setupToken == "" {
+		t.Fatalf("expected setup_url like /setup/<token>, got %q", result.SetupURL)
+	}
+
+	setupResp := getJSON(t, ts, "/api/setup/"+setupToken, nil)
+	if setupResp.StatusCode != http.StatusOK {
+		t.Fatalf("setup page data: expected 200, got %d", setupResp.StatusCode)
+	}
+	var setup struct {
+		Name     string `json:"name"`
+		APIToken string `json:"api_token"`
+	}
+	json.NewDecoder(setupResp.Body).Decode(&setup)
+	if setup.Name != "Carol" || setup.APIToken != result.APIToken {
+		t.Errorf("setup page returned %+v, want Carol with the invite's API token", setup)
+	}
+
+	scriptResp := getJSON(t, ts, "/api/install/"+setupToken, nil)
+	script, _ := io.ReadAll(scriptResp.Body)
+	if scriptResp.StatusCode != http.StatusOK || !strings.Contains(string(script), result.APIToken) {
+		t.Errorf("install script: expected 200 embedding the API token, got %d", scriptResp.StatusCode)
 	}
 }
 

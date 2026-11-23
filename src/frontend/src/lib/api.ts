@@ -178,7 +178,7 @@ export const invitesApi = {
             post<InviteCreated>('/admin/invites', body),
   delete: (id: number) => del(`/admin/invites/${id}`),
   use:    (body: { token: string; name: string }) =>
-            post<{ name: string; api_token: string; download_links?: Record<string, string> }>('/invite/use', body),
+            post<{ name: string; api_token: string; setup_url: string }>('/invite/use', body),
 }
 
 // Audit

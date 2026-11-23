@@ -243,19 +243,28 @@ func (h *UsersHandler) GenerateSetupLink(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusNotFound, errResp("user not found"))
 		return
 	}
-	token := strings.ReplaceAll(uuid.New().String(), "-", "") +
-		strings.ReplaceAll(uuid.New().String(), "-", "")
-	setup := database.SetupToken{
-		Token:     token,
-		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(48 * time.Hour),
-	}
-	if err := h.db.Create(&setup).Error; err != nil {
+	url, err := createSetupLink(h.db, user.ID)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to create setup link"))
 		return
 	}
 	logAudit(h.db, r, "generate_setup_link", "user:"+user.Name, "")
-	writeJSON(w, http.StatusCreated, map[string]string{"url": "/setup/" + token})
+	writeJSON(w, http.StatusCreated, map[string]string{"url": url})
+}
+
+// createSetupLink creates a 48h setup token for userID and returns its /setup/{token} page path.
+func createSetupLink(db *gorm.DB, userID uint) (string, error) {
+	token := strings.ReplaceAll(uuid.New().String(), "-", "") +
+		strings.ReplaceAll(uuid.New().String(), "-", "")
+	setup := database.SetupToken{
+		Token:     token,
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(48 * time.Hour),
+	}
+	if err := db.Create(&setup).Error; err != nil {
+		return "", err
+	}
+	return "/setup/" + token, nil
 }
 
 // SetupLinkFetch returns user info and pre-auth download links for a valid setup token.

@@ -141,6 +141,13 @@ func (h *InvitesHandler) Use(w http.ResponseWriter, r *http.Request) {
 	for _, ip := range invitePools {
 		h.db.Create(&database.UserPool{UserID: user.ID, PoolID: ip.PoolID})
 	}
+
+	setupURL, err := createSetupLink(h.db, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to create setup link"))
+		return
+	}
+
 	updates := map[string]interface{}{"use_count": gorm.Expr("use_count + 1")}
 	if !invite.MultiUse {
 		updates["used_at"] = time.Now()
@@ -148,13 +155,10 @@ func (h *InvitesHandler) Use(w http.ResponseWriter, r *http.Request) {
 	}
 	h.db.Model(&invite).Updates(updates)
 
-	// Auto-generate one-time pre-auth download links for each platform
-	downloadLinks := CreateLinksForUser(h.db, user.ID, 3)
-
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"name":           user.Name,
-		"api_token":      apiToken,
-		"pools":          invite.Pools,
-		"download_links": downloadLinks,
+		"name":      user.Name,
+		"api_token": apiToken,
+		"pools":     invite.Pools,
+		"setup_url": setupURL,
 	})
 }
