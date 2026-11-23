@@ -27,7 +27,7 @@ func (h *SessionsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure the current session is in the DB (handles sessions created before recording was added).
 	if cookie, err := r.Cookie(auth.CookieName); err == nil {
-		hash := hashToken(cookie.Value)
+		hash := auth.HashToken(cookie.Value)
 		expiresAt := time.Now().Add(24 * time.Hour)
 		if claims.RegisteredClaims.ExpiresAt != nil {
 			expiresAt = claims.RegisteredClaims.ExpiresAt.Time

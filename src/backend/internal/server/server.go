@@ -100,10 +100,14 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	r.Get("/docs", handlers.DocsUI)
 	r.Get("/docs/openapi.json", handlers.DocsSpec)
 
+	// Cookie-authenticated routes reject cross-origin state changes (Sec-Fetch-Site / Origin
+	// checks): SameSite=Lax alone still lets sibling subdomains send the admin cookie.
+	crossOrigin := http.NewCrossOriginProtection()
+
 	// Auth
 	authH := handlers.NewAuthHandler(s.db, s.cfg)
-	r.Post("/api/auth/login", authH.Login)
-	r.Post("/api/auth/logout", authH.Logout)
+	r.With(crossOrigin.Handler).Post("/api/auth/login", authH.Login)
+	r.With(crossOrigin.Handler).Post("/api/auth/logout", authH.Logout)
 
 	// Public: OAuth token exchange proxy (avoids CORS from browser)
 	oauthH := handlers.NewOAuthHandler()
@@ -117,8 +121,9 @@ func (s *Server) SetupAdminRouter() http.Handler {
 	usersH := handlers.NewUsersHandler(s.db)
 	r.Get("/api/setup/{token}", usersH.SetupLinkFetch)
 
-	authMw := middleware.Authenticate(s.cfg)
+	authMw := middleware.Authenticate(s.cfg, s.db)
 	r.Group(func(r chi.Router) {
+		r.Use(crossOrigin.Handler)
 		r.Use(authMw)
 
 		r.Get("/api/auth/me", authH.Me)

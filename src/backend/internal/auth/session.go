@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -16,10 +19,16 @@ type Claims struct {
 }
 
 func GenerateToken(adminID uint, username, secret string, expiry time.Duration) (string, error) {
+	// A random ID keeps tokens issued in the same second distinct, so each maps to its own session row.
+	jti := make([]byte, 16)
+	if _, err := rand.Read(jti); err != nil {
+		return "", err
+	}
 	claims := Claims{
 		AdminID:  adminID,
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        hex.EncodeToString(jti),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
@@ -46,4 +55,10 @@ func ValidateToken(tokenStr, secret string) (*Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// HashToken is how session tokens are stored and looked up in admin_sessions.
+func HashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
 }

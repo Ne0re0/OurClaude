@@ -1,10 +1,9 @@
 package handlers
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"claude-proxy/internal/auth"
@@ -16,13 +15,18 @@ import (
 	"gorm.io/gorm"
 )
 
+// dummyPasswordHash is compared against when the username does not exist, so
+// unknown and known usernames take the same time to reject.
+var dummyPasswordHash, _ = bcrypt.GenerateFromPassword([]byte("unknown-admin-timing-equalizer"), bcrypt.DefaultCost)
+
 type AuthHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db      *gorm.DB
+	cfg     *config.Config
+	limiter *loginLimiter
 }
 
 func NewAuthHandler(db *gorm.DB, cfg *config.Config) *AuthHandler {
-	return &AuthHandler{db: db, cfg: cfg}
+	return &AuthHandler{db: db, cfg: cfg, limiter: newLoginLimiter()}
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -36,8 +40,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
+	ipKey, userKey := "ip:"+middleware.ClientIP(r), "user:"+req.Username
+	if wait := max(h.limiter.attempt(ipKey, maxLoginAttemptsPerIP, now), h.limiter.attempt(userKey, maxLoginAttemptsPerUser, now)); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeJSON(w, http.StatusTooManyRequests, errResp("too many login attempts, try again later"))
+		return
+	}
+
 	var admin database.Admin
 	if err := h.db.Where("username = ?", req.Username).First(&admin).Error; err != nil {
+		bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
 		writeJSON(w, http.StatusUnauthorized, errResp("invalid credentials"))
 		return
 	}
@@ -61,9 +74,24 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.limiter.reset(ipKey, userKey)
+
 	token, err := auth.GenerateToken(admin.ID, admin.Username, h.cfg.JWTSecret, h.cfg.JWTExpiry)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to generate session"))
+		return
+	}
+
+	// The session row is what makes the cookie valid (see middleware.Authenticate).
+	if err := h.db.Create(&database.AdminSession{
+		AdminID:    admin.ID,
+		TokenHash:  auth.HashToken(token),
+		IP:         middleware.ClientIP(r),
+		UserAgent:  r.Header.Get("User-Agent"),
+		LastUsedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(h.cfg.JWTExpiry),
+	}).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to create session"))
 		return
 	}
 
@@ -85,16 +113,6 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Details:       "ip=" + middleware.ClientIP(r),
 	})
 
-	// Record session in DB for the Sessions page
-	h.db.Create(&database.AdminSession{
-		AdminID:    admin.ID,
-		TokenHash:  hashToken(token),
-		IP:         middleware.ClientIP(r),
-		UserAgent:  r.Header.Get("User-Agent"),
-		LastUsedAt: time.Now(),
-		ExpiresAt:  time.Now().Add(h.cfg.JWTExpiry),
-	})
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"admin": map[string]interface{}{
 			"id":           admin.ID,
@@ -107,6 +125,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(auth.CookieName); err == nil {
+		h.db.Where("token_hash = ?", auth.HashToken(cookie.Value)).Delete(&database.AdminSession{})
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.CookieName,
 		Value:    "",
@@ -263,7 +284,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Invalidate session by clearing cookie
+	h.db.Where("admin_id = ?", admin.ID).Delete(&database.AdminSession{})
 	http.SetCookie(w, &http.Cookie{
 		Name:     auth.CookieName,
 		Value:    "",
@@ -273,11 +294,6 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "password changed, please log in again"})
-}
-
-func hashToken(token string) string {
-	h := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(h[:])
 }
 
 // helpers
