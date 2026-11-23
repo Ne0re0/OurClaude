@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -404,7 +405,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var cacheKey string
 	if !modelListRequest && h.settings.GetInt("response_cache_ttl") > 0 {
 		cacheKey = h.respCache.key(user.ID, body)
-		if cached := h.respCache.get(cacheKey); cached != nil {
+		if cached := h.respCache.get(cacheKey); cached != nil &&
+			(http.Header(cached.headers).Get("Content-Encoding") == "" || acceptsGzip(r.Header.Get("Accept-Encoding"))) {
 			for k, vs := range cached.headers {
 				for _, v := range vs {
 					w.Header().Add(k, v)
@@ -634,12 +636,22 @@ func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user
 
 	for key, values := range r.Header {
 		k := strings.ToLower(key)
-		if k == "authorization" || k == "host" || k == "x-api-key" {
+		if k == "authorization" || k == "host" || k == "x-api-key" || k == "accept-encoding" {
 			continue
 		}
 		for _, v := range values {
 			req.Header.Add(key, v)
 		}
+	}
+
+	// Only ever ask upstream for gzip, the one encoding usage parsing can decode
+	// with the stdlib. When the client accepts gzip we request it explicitly, so
+	// the transport passes the compressed bytes straight through to the client
+	// (no recompression) and parseAndLogUsage decompresses its captured copy off
+	// the request path. Otherwise the header stays unset: the transport then
+	// negotiates gzip itself and transparently decompresses for us.
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		req.Header.Set("Accept-Encoding", "gzip")
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -743,7 +755,7 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 		}, cacheTTL)
 	}
 
-	go parseAndLogUsage(captured, isStreaming, userID, accountID, endpoint, resp.StatusCode, latencyMs, ttftMs, messagesJSON, h.db, logStream, statsStream)
+	go parseAndLogUsage(captured, resp.Header.Get("Content-Encoding"), isStreaming, userID, accountID, endpoint, resp.StatusCode, latencyMs, ttftMs, messagesJSON, h.db, logStream, statsStream)
 }
 
 func (h *Handler) maybeAlertQuota(user *database.User, period string, used, quota int) {
@@ -760,16 +772,18 @@ func (h *Handler) maybeAlertQuota(user *database.User, period string, used, quot
 	h.webhooks.Dispatch("quota.warning", map[string]interface{}{
 		"user_id": user.ID,
 		"period":  period,
-		"used":       used,
-		"quota":      quota,
-		"percent":    int(pct * 100),
+		"used":    used,
+		"quota":   quota,
+		"percent": int(pct * 100),
 	})
 }
 
-func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, endpoint string, statusCode, latencyMs, ttftMs int, messagesJSON string, db *gorm.DB, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) {
+func parseAndLogUsage(body []byte, contentEncoding string, isStreaming bool, userID, accountID uint, endpoint string, statusCode, latencyMs, ttftMs int, messagesJSON string, db *gorm.DB, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) {
 	var inputTokens, outputTokens, cacheRead, cacheWrite int
 	var model string
 	var responseText strings.Builder
+
+	body = decodeBody(body, contentEncoding)
 
 	if len(body) == 0 {
 		log.Printf("proxy: empty response body for user=%d account=%d status=%d", userID, accountID, statusCode)
@@ -826,7 +840,7 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 		}
 	} else {
 		var resp struct {
-			Model   string `json:"model"`
+			Model string `json:"model"`
 			Usage struct {
 				InputTokens              int `json:"input_tokens"`
 				OutputTokens             int `json:"output_tokens"`
@@ -1097,4 +1111,51 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// acceptsGzip reports whether an Accept-Encoding header value allows gzip.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "gzip" && name != "x-gzip" && name != "*" {
+			continue
+		}
+		q := strings.ToLower(strings.ReplaceAll(params, " ", ""))
+		if strings.HasPrefix(q, "q=") {
+			if v, err := strconv.ParseFloat(q[2:], 64); err == nil && v == 0 {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// maxDecodedCapture bounds the decompressed size of a captured body.
+const maxDecodedCapture = 32 << 20
+
+// decodeBody returns the decoded form of a captured response body for usage
+// parsing. A gzip stream cut short by the capture limit is decoded as far as
+// it goes; anything undecodable is returned unchanged.
+func decodeBody(body []byte, contentEncoding string) []byte {
+	enc := strings.ToLower(strings.TrimSpace(contentEncoding))
+	if enc == "" || enc == "identity" || len(body) == 0 {
+		return body
+	}
+	if enc != "gzip" && enc != "x-gzip" {
+		log.Printf("proxy: cannot decode content-encoding %q for usage parsing", contentEncoding)
+		return body
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		log.Printf("proxy: gzip header invalid for usage parsing: %v", err)
+		return body
+	}
+	defer zr.Close()
+	var out bytes.Buffer
+	if _, err := io.Copy(&out, io.LimitReader(zr, maxDecodedCapture)); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		log.Printf("proxy: gzip decode incomplete for usage parsing: %v", err)
+	}
+	return out.Bytes()
 }
