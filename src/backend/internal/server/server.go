@@ -367,6 +367,7 @@ func (s *Server) Start() error {
 
 	s.poolMgr.StartAutoReset(ctx, s.cfg.PoolResetInterval)
 	s.poolMgr.StartScheduledResets(ctx)
+	s.oauth.StartAutoRefresh(ctx, s.db, 5*time.Minute)
 	s.poolMgr.StartHealthCheck(ctx, s.cfg.HealthCheckInterval, s.cfg.AnthropicURL)
 
 	// Start Anthropic quota poller
