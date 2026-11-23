@@ -912,8 +912,8 @@ func parseAndLogUsage(body []byte, isStreaming bool, userID, accountID uint, end
 		statsStream.Publish(evt)
 	}
 
-	// Save conversation log only for successful requests with actual content
-	if len(messagesJSON) > 0 && messagesJSON != "null" && statusCode == 200 && (inputTokens > 0 || outputTokens > 0) && responseText.Len() > 0 {
+	// Save conversation log for all successful requests with messages (including tool-use-only responses)
+	if len(messagesJSON) > 0 && messagesJSON != "null" && statusCode == 200 && (inputTokens > 0 || outputTokens > 0) {
 		logID := entry.ID
 		db.Create(&database.ConversationLog{
 			UserID:       userID,

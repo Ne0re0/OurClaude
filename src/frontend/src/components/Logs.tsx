@@ -22,9 +22,9 @@ function extractText(content: ConversationMessage['content']): string {
 }
 
 function ConversationPanel({ logId, onClose }: { logId: number; onClose: () => void }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ['conversation', logId],
-    queryFn: () => conversationsApi.get(logId),
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['conversation-by-usage', logId],
+    queryFn: () => conversationsApi.getByUsage(logId),
   })
 
   function exportConversation() {
@@ -74,6 +74,11 @@ function ConversationPanel({ logId, onClose }: { logId: number; onClose: () => v
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {isLoading && (
             <div className="text-center text-gray-400 dark:text-gray-500 py-12">Loading...</div>
+          )}
+          {isError && (
+            <div className="text-center text-gray-400 dark:text-gray-500 py-12">
+              No conversation was captured for this request.
+            </div>
           )}
           {data && data.messages && data.messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
