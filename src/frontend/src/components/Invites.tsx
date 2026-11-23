@@ -54,6 +54,7 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
   const [label, setLabel]       = useState('')
   const [poolIds, setPoolIds]   = useState<number[]>([])
   const [hours, setHours]       = useState('72')
+  const [multiUse, setMultiUse] = useState(false)
   const [created, setCreated]   = useState<InviteCreated | null>(null)
   const [error, setError]       = useState('')
   const qc = useQueryClient()
@@ -65,6 +66,7 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
       label,
       pool_ids: poolIds,
       expires_in_hours: Number(hours),
+      multi_use: multiUse,
     }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['invites'] })
@@ -84,7 +86,9 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
             Expires: {new Date(created.expires_at).toLocaleString()}
           </p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-            Share the invite link below with the recipient. They'll be prompted to enter their name and will get a proxy API token.
+            {created.multi_use
+              ? "Share the invite link below. Anyone who opens it before it expires can enter their name and get their own proxy API token."
+              : "Share the invite link below with the recipient. They'll be prompted to enter their name and will get a proxy API token."}
           </p>
           <div className="mb-5">
             <CopyLink token={created.token} serverUrl={window.location.origin} />
@@ -126,6 +130,18 @@ function CreateInviteModal({ onClose }: { onClose: () => void }) {
               value={hours} onChange={e => setHours(e.target.value)}
             />
           </div>
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={multiUse}
+              onChange={e => setMultiUse(e.target.checked)}
+              className="w-4 h-4 mt-0.5 text-brand-500 rounded"
+            />
+            <span>
+              <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Allow multiple users</span>
+              <span className="block text-xs text-gray-400 dark:text-gray-500">Anyone with the link can register until it expires or you delete it.</span>
+            </span>
+          </label>
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
         <div className="flex gap-3 mt-6">
@@ -232,6 +248,10 @@ export default function Invites() {
                         </span>
                       ) : expired ? (
                         <span className="px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">Expired</span>
+                      ) : invite.multi_use ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                          Multi-use · {invite.use_count} joined
+                        </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded-full text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">Pending</span>
                       )}

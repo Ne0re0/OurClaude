@@ -102,8 +102,10 @@ type InviteToken struct {
 	Token     string     `gorm:"uniqueIndex;not null" json:"token"`
 	Pools     []*Pool    `gorm:"many2many:invite_pools;joinForeignKey:InviteID;joinReferences:PoolID" json:"pools,omitempty"`
 	Label     string     `json:"label"`
+	MultiUse  bool       `gorm:"default:false" json:"multi_use"`
+	UseCount  int        `gorm:"default:0" json:"use_count"`
 	ExpiresAt time.Time  `json:"expires_at"`
-	UsedAt    *time.Time `json:"used_at,omitempty"`
+	UsedAt    *time.Time `json:"used_at,omitempty"` // only set for single-use invites
 	UsedBy    string     `json:"used_by,omitempty"` // name of user who accepted
 	CreatedAt time.Time  `json:"created_at"`
 }

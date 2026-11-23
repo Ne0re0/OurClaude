@@ -272,6 +272,54 @@ func TestInviteFlow(t *testing.T) {
 	}
 }
 
+func TestMultiUseInvite(t *testing.T) {
+	ts, _ := setupServer(t)
+	cookies := login(t, ts)
+
+	createResp := postJSON(t, ts, "/api/admin/invites", map[string]interface{}{
+		"label":            "Team invite",
+		"expires_in_hours": 24,
+		"multi_use":        true,
+	}, cookies)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create invite: expected 201, got %d", createResp.StatusCode)
+	}
+	var invite struct {
+		Token string `json:"token"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&invite)
+
+	tokens := map[string]bool{}
+	for _, name := range []string{"Alice", "Bob"} {
+		resp := postJSON(t, ts, "/api/invite/use", map[string]string{"token": invite.Token, "name": name}, nil)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("use invite as %s: expected 201, got %d", name, resp.StatusCode)
+		}
+		var result struct {
+			APIToken string `json:"api_token"`
+		}
+		json.NewDecoder(resp.Body).Decode(&result)
+		tokens[result.APIToken] = true
+	}
+	if len(tokens) != 2 {
+		t.Errorf("expected 2 distinct API tokens, got %d", len(tokens))
+	}
+
+	listResp := getJSON(t, ts, "/api/admin/invites", cookies)
+	var invites []struct {
+		MultiUse bool    `json:"multi_use"`
+		UseCount int     `json:"use_count"`
+		UsedAt   *string `json:"used_at"`
+	}
+	json.NewDecoder(listResp.Body).Decode(&invites)
+	if len(invites) != 1 {
+		t.Fatalf("expected 1 invite, got %d", len(invites))
+	}
+	if !invites[0].MultiUse || invites[0].UseCount != 2 || invites[0].UsedAt != nil {
+		t.Errorf("expected active multi-use invite with use_count=2, got %+v", invites[0])
+	}
+}
+
 func TestUserSelfService(t *testing.T) {
 	ts, _ := setupServer(t)
 	cookies := login(t, ts)

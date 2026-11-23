@@ -33,6 +33,7 @@ func (h *InvitesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Label     string `json:"label"`
 		PoolIDs   []uint `json:"pool_ids"`
 		ExpiresIn int    `json:"expires_in_hours"` // default 72
+		MultiUse  bool   `json:"multi_use"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
@@ -49,6 +50,7 @@ func (h *InvitesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	invite := database.InviteToken{
 		Token:     token,
 		Label:     req.Label,
+		MultiUse:  req.MultiUse,
 		ExpiresAt: time.Now().Add(time.Duration(req.ExpiresIn) * time.Hour),
 	}
 	if err := h.db.Create(&invite).Error; err != nil {
@@ -69,6 +71,7 @@ func (h *InvitesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		"token":      token,
 		"label":      invite.Label,
 		"pool_ids":   req.PoolIDs,
+		"multi_use":  invite.MultiUse,
 		"expires_at": invite.ExpiresAt,
 	})
 }
@@ -138,12 +141,12 @@ func (h *InvitesHandler) Use(w http.ResponseWriter, r *http.Request) {
 	for _, ip := range invitePools {
 		h.db.Create(&database.UserPool{UserID: user.ID, PoolID: ip.PoolID})
 	}
-	// Mark invite as used
-	now := time.Now()
-	h.db.Model(&invite).Updates(map[string]interface{}{
-		"used_at": now,
-		"used_by": req.Name,
-	})
+	updates := map[string]interface{}{"use_count": gorm.Expr("use_count + 1")}
+	if !invite.MultiUse {
+		updates["used_at"] = time.Now()
+		updates["used_by"] = req.Name
+	}
+	h.db.Model(&invite).Updates(updates)
 
 	// Auto-generate one-time pre-auth download links for each platform
 	downloadLinks := CreateLinksForUser(h.db, user.ID, 3)

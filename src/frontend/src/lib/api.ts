@@ -174,7 +174,7 @@ export const settingsApi = {
 // Invites
 export const invitesApi = {
   list:   () => get<Invite[]>('/admin/invites'),
-  create: (body: { label?: string; pool_ids?: number[]; expires_in_hours?: number }) =>
+  create: (body: { label?: string; pool_ids?: number[]; expires_in_hours?: number; multi_use?: boolean }) =>
             post<InviteCreated>('/admin/invites', body),
   delete: (id: number) => del(`/admin/invites/${id}`),
   use:    (body: { token: string; name: string }) =>
@@ -420,6 +420,8 @@ export interface Invite {
   token: string
   label: string
   pools?: Pool[]
+  multi_use: boolean
+  use_count: number
   expires_at: string
   used_at?: string
   used_by?: string
@@ -431,6 +433,7 @@ export interface InviteCreated {
   token: string
   label: string
   pool_ids?: number[]
+  multi_use: boolean
   expires_at: string
 }
 
