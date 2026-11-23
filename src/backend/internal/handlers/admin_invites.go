@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+var errInviteUsed = errors.New("invite already used")
 
 type InvitesHandler struct {
 	db *gorm.DB
@@ -123,37 +126,55 @@ func (h *InvitesHandler) Use(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create user
 	apiToken := "sk-proxy-" + strings.ReplaceAll(uuid.New().String(), "-", "")
 	user := database.User{
 		Name:     req.Name,
 		APIToken: apiToken,
 		Active:   true,
 	}
-	if err := h.db.Create(&user).Error; err != nil {
+	var setupURL string
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		// Claim the invite before creating anything: the conditional update lets only
+		// one concurrent request through for a single-use invite.
+		claim := tx.Model(&database.InviteToken{}).Where("id = ?", invite.ID)
+		updates := map[string]interface{}{"use_count": gorm.Expr("use_count + 1")}
+		if !invite.MultiUse {
+			claim = claim.Where("used_at IS NULL")
+			updates["used_at"] = time.Now()
+			updates["used_by"] = req.Name
+		}
+		res := claim.Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errInviteUsed
+		}
+
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		var invitePools []database.InvitePool
+		if err := tx.Where("invite_id = ?", invite.ID).Find(&invitePools).Error; err != nil {
+			return err
+		}
+		for _, ip := range invitePools {
+			if err := tx.Create(&database.UserPool{UserID: user.ID, PoolID: ip.PoolID}).Error; err != nil {
+				return err
+			}
+		}
+		var err error
+		setupURL, err = createSetupLink(tx, user.ID)
+		return err
+	})
+	if errors.Is(err, errInviteUsed) {
+		writeJSON(w, http.StatusGone, errResp("invite already used"))
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errResp("failed to create account"))
 		return
 	}
-
-	// Sync pools from invite (many-to-many)
-	var invitePools []database.InvitePool
-	h.db.Where("invite_id = ?", invite.ID).Find(&invitePools)
-	for _, ip := range invitePools {
-		h.db.Create(&database.UserPool{UserID: user.ID, PoolID: ip.PoolID})
-	}
-
-	setupURL, err := createSetupLink(h.db, user.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errResp("failed to create setup link"))
-		return
-	}
-
-	updates := map[string]interface{}{"use_count": gorm.Expr("use_count + 1")}
-	if !invite.MultiUse {
-		updates["used_at"] = time.Now()
-		updates["used_by"] = req.Name
-	}
-	h.db.Model(&invite).Updates(updates)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"name":      user.Name,

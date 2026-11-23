@@ -235,20 +235,13 @@ func (h *UserSelfHandler) ImportAccount(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resolve pool: prefer user's assigned pool, fall back to any available pool
-	var poolID uint
+	// Accounts only go into a pool the user belongs to; never into someone else's.
 	var poolEntry database.UserPool
-	if err := h.db.Where("user_id = ?", user.ID).First(&poolEntry).Error; err == nil {
-		poolID = poolEntry.PoolID
-	} else {
-		// No pool assigned to this user — use the first available pool
-		var anyPool database.Pool
-		if err := h.db.First(&anyPool).Error; err != nil {
-			writeJSON(w, http.StatusBadRequest, errResp("no pools exist in the proxy yet — ask an administrator to create one"))
-			return
-		}
-		poolID = anyPool.ID
+	if err := h.db.Where("user_id = ?", user.ID).First(&poolEntry).Error; err != nil {
+		writeJSON(w, http.StatusForbidden, errResp("you are not assigned to any pool — ask an administrator to add you to one before sharing an account"))
+		return
 	}
+	poolID := poolEntry.PoolID
 
 	var expiresAt time.Time
 	if creds.ClaudeAiOauth.ExpiresAt > 0 {
@@ -458,6 +451,10 @@ func (h *UserSelfHandler) PoolStatus(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/user/mcp-servers — returns MCP servers for client configuration
 func (h *UserSelfHandler) MCPServers(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.extractUser(r); err != nil {
+		writeJSON(w, http.StatusUnauthorized, errResp("invalid token"))
+		return
+	}
 	var servers []database.MCPServer
 	h.db.Order("name").Find(&servers)
 	writeJSON(w, http.StatusOK, servers)
