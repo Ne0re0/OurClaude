@@ -21,13 +21,20 @@ import (
 // setupServer creates an in-memory test server with SQLite :memory: DB.
 func setupServer(t *testing.T) (*httptest.Server, *config.Config) {
 	t.Helper()
+	return setupServerWithDB(t, ":memory:")
+}
+
+// setupServerWithDB is for tests with concurrent requests: each pooled connection
+// to ":memory:" opens its own empty database, so those need a file.
+func setupServerWithDB(t *testing.T, dbPath string) (*httptest.Server, *config.Config) {
+	t.Helper()
 
 	cfg := &config.Config{
 		WebPort:       "0",
 		JWTSecret:     "test-secret-1234567890",
 		JWTExpiry:     1 * time.Hour,
 		DBType:        "sqlite",
-		DBPath:        ":memory:",
+		DBPath:        dbPath,
 		AnthropicURL:  "http://localhost:9999",
 		EncryptionKey: "test-enc-key-12345",
 	}
