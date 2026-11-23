@@ -6,9 +6,10 @@ services:
       args:
          CLI_PLATFORMS: linux-amd64
     ports:
-      - "${WEB_PORT:-3000}:3000"
-    #volumes:
-      #- ./data:/data
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/data
+      - ./dist:/usr/local/share/cl:ro
     environment:
       - WEB_PORT=3000
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
