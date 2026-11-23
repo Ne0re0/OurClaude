@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -475,3 +476,97 @@ func TestStatsExportCSV(t *testing.T) {
 		t.Errorf("expected text/csv, got %s", ct)
 	}
 }
+
+func TestPoolAddAccounts(t *testing.T) {
+	ts, _ := setupServer(t)
+	cookies := login(t, ts)
+
+	decode := func(resp *http.Response, v interface{}) {
+		t.Helper()
+		defer resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+	type idOnly struct {
+		ID uint `json:"id"`
+	}
+
+	var poolA, poolB idOnly
+	decode(postJSON(t, ts, "/api/admin/pools", map[string]string{"name": "A"}, cookies), &poolA)
+	decode(postJSON(t, ts, "/api/admin/pools", map[string]string{"name": "B"}, cookies), &poolB)
+
+	creds := `{"claudeAiOauth":{"accessToken":"at-test","refreshToken":"rt-test","expiresAt":4102444800000}}`
+	resp := postJSON(t, ts, "/api/admin/accounts", map[string]interface{}{
+		"name":             "acc1",
+		"credentials_json": creds,
+		"pool_ids":         []uint{poolA.ID, poolB.ID},
+	}, cookies)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account: expected 201, got %d", resp.StatusCode)
+	}
+	var acc idOnly
+	decode(resp, &acc)
+
+	// Remove the account from pool A only.
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/admin/accounts/"+itoa(acc.ID)+"/pool?pool_id="+itoa(poolA.ID), nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	delResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unlink: expected 204, got %d", delResp.StatusCode)
+	}
+
+	// Add it back to pool A.
+	type addResult struct {
+		Added int64 `json:"added"`
+		Pool  struct {
+			Accounts []idOnly `json:"accounts"`
+		} `json:"pool"`
+	}
+	resp = postJSON(t, ts, "/api/admin/pools/"+itoa(poolA.ID)+"/accounts", map[string]interface{}{"account_ids": []uint{acc.ID}}, cookies)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add accounts: expected 200, got %d", resp.StatusCode)
+	}
+	var res addResult
+	decode(resp, &res)
+	if res.Added != 1 || len(res.Pool.Accounts) != 1 || res.Pool.Accounts[0].ID != acc.ID {
+		t.Fatalf("add accounts: unexpected result %+v", res)
+	}
+
+	// The account must be in both pools again (pool B link untouched).
+	var got struct {
+		Pools []idOnly `json:"pools"`
+	}
+	decode(getJSON(t, ts, "/api/admin/accounts/"+itoa(acc.ID), cookies), &got)
+	if len(got.Pools) != 2 {
+		t.Fatalf("expected account in 2 pools, got %+v", got.Pools)
+	}
+
+	// Adding again is a no-op, not an error.
+	resp = postJSON(t, ts, "/api/admin/pools/"+itoa(poolA.ID)+"/accounts", map[string]interface{}{"account_ids": []uint{acc.ID}}, cookies)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("re-add: expected 200, got %d", resp.StatusCode)
+	}
+	decode(resp, &res)
+	if res.Added != 0 || len(res.Pool.Accounts) != 1 {
+		t.Fatalf("re-add: unexpected result %+v", res)
+	}
+
+	// Bad input.
+	if r := postJSON(t, ts, "/api/admin/pools/"+itoa(poolA.ID)+"/accounts", map[string]interface{}{"account_ids": []uint{}}, cookies); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty ids: expected 400, got %d", r.StatusCode)
+	}
+	if r := postJSON(t, ts, "/api/admin/pools/"+itoa(poolA.ID)+"/accounts", map[string]interface{}{"account_ids": []uint{99999}}, cookies); r.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown account: expected 404, got %d", r.StatusCode)
+	}
+	if r := postJSON(t, ts, "/api/admin/pools/99999/accounts", map[string]interface{}{"account_ids": []uint{acc.ID}}, cookies); r.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown pool: expected 404, got %d", r.StatusCode)
+	}
+}
+
+func itoa(n uint) string { return strconv.FormatUint(uint64(n), 10) }

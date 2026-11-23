@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"claude-proxy/internal/pool"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type PoolsHandler struct {
@@ -335,5 +337,63 @@ func (h *PoolsHandler) Quotas(w http.ResponseWriter, r *http.Request) {
 		"avg_five_hour_pct": sumFive / n,
 		"avg_seven_day_pct": sumSeven / n,
 		"quotas":            quotas,
+	})
+}
+
+// POST /api/admin/pools/{id}/accounts — adds existing accounts to this pool.
+// Body: {"account_ids": [1, 2]}. Accounts already in the pool are skipped, and
+// the accounts' other pool memberships are left untouched.
+func (h *PoolsHandler) AddAccounts(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid id"))
+		return
+	}
+
+	var req struct {
+		AccountIDs []uint `json:"account_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp("invalid request body"))
+		return
+	}
+	if len(req.AccountIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest, errResp("account_ids is required"))
+		return
+	}
+
+	var p database.Pool
+	if err := h.db.First(&p, id).Error; err != nil {
+		writeJSON(w, http.StatusNotFound, errResp("pool not found"))
+		return
+	}
+
+	// Only link accounts that actually exist.
+	var validIDs []uint
+	if err := h.db.Model(&database.ClaudeAccount{}).Where("id IN ?", req.AccountIDs).Pluck("id", &validIDs).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to look up accounts"))
+		return
+	}
+	if len(validIDs) == 0 {
+		writeJSON(w, http.StatusNotFound, errResp("no matching accounts found"))
+		return
+	}
+
+	links := make([]database.AccountPool, 0, len(validIDs))
+	for _, aid := range validIDs {
+		links = append(links, database.AccountPool{AccountID: aid, PoolID: id})
+	}
+	result := h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&links)
+	if result.Error != nil {
+		writeJSON(w, http.StatusInternalServerError, errResp("failed to add accounts to pool"))
+		return
+	}
+
+	logAudit(h.db, r, "link_accounts", "pool:"+p.Name, fmt.Sprintf("account_ids=%v", validIDs))
+
+	h.db.Preload("Accounts").First(&p, id)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"added": result.RowsAffected,
+		"pool":  p,
 	})
 }

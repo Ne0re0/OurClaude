@@ -98,6 +98,8 @@ export const poolsApi = {
   cancelScheduledReset: (id: number) => del(`/admin/pools/${id}/scheduled-reset`),
   stats:  (id: number) => get<PoolStats>(`/admin/pools/${id}/stats`),
   users:  (id: number) => get<User[]>(`/admin/pools/${id}/users`),
+  addAccounts: (id: number, accountIds: number[]) =>
+            post<{ added: number; pool: Pool }>(`/admin/pools/${id}/accounts`, { account_ids: accountIds }),
 }
 
 // Accounts

@@ -150,6 +150,7 @@ func (s *Server) SetupAdminRouter() http.Handler {
 		r.Get("/api/admin/pools/{id}/stats", poolsH.Stats)
 		r.Get("/api/admin/pools/{id}/users", poolsH.Users)
 		r.Get("/api/admin/pools/{id}/quotas", poolsH.Quotas)
+		r.Post("/api/admin/pools/{id}/accounts", poolsH.AddAccounts)
 
 		// Teams
 		teamsH := handlers.NewTeamsHandler(s.db)
