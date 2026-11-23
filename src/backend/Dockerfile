@@ -47,10 +47,15 @@ RUN mkdir -p /dist && \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget curl bash
 
-RUN mkdir -p /data /usr/local/share/cl
+# Run unprivileged. A host-mounted ./data must be owned by uid 10001:
+#   docker compose run --rm --no-deps --user root --entrypoint chown claude-proxy -R 10001:10001 /data
+RUN addgroup -S -g 10001 app && adduser -S -D -H -u 10001 -G app app \
+    && mkdir -p /data /usr/local/share/cl && chown app:app /data
 
 COPY --from=go-builder /claude-proxy /usr/local/bin/claude-proxy
 COPY --from=go-builder /dist/ /usr/local/share/cl/
+
+USER app
 
 EXPOSE 3000 8080
 
