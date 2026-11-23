@@ -146,15 +146,11 @@ type SettingsProvider interface {
 }
 
 func New(db *gorm.DB, poolMgr *pool.Manager, upstream string, redisURL string, settings SettingsProvider, wh WebhookDispatcher, logStream *sse.Broadcaster, statsStream *sse.Broadcaster) *Handler {
-	rpm := 0
-	if settings != nil {
-		rpm = settings.GetInt("user_max_rpm")
-	}
 	return &Handler{
 		db:          db,
 		pool:        poolMgr,
 		upstream:    strings.TrimRight(upstream, "/"),
-		limiter:     ratelimit.New(rpm, redisURL),
+		limiter:     ratelimit.New(redisURL),
 		settings:    settings,
 		webhooks:    wh,
 		logStream:   logStream,
@@ -213,6 +209,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Idempotency-Key deduplication: reject duplicate in-flight requests
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
+		key = fmt.Sprintf("%d:%s", user.ID, key)
 		if _, loaded := h.inflight.LoadOrStore(key, struct{}{}); loaded {
 			writeError(w, http.StatusConflict, "duplicate request in progress")
 			return
@@ -220,7 +217,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer h.inflight.Delete(key)
 	}
 
-	if !h.limiter.Allow(user.ID) {
+	if !h.limiter.Allow(user.ID, h.settings.GetInt("user_max_rpm")) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -393,7 +390,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Response cache check
 	var cacheKey string
 	if !modelListRequest && h.settings.GetInt("response_cache_ttl") > 0 {
-		cacheKey = h.respCache.key(user.ID, body)
+		cacheKey = h.respCache.key(user.ID, r.URL.Path, body)
 		if cached := h.respCache.get(cacheKey); cached != nil &&
 			(http.Header(cached.headers).Get("Content-Encoding") == "" || acceptsGzip(r.Header.Get("Accept-Encoding"))) {
 			for k, vs := range cached.headers {
@@ -422,7 +419,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusServiceUnavailable, "no account assigned to "+modelRequest.Model+" in your pools")
 				return
 			}
-			writeError(w, http.StatusServiceUnavailable, "no available Claude accounts: "+err.Error())
+			log.Printf("proxy: no account for user %d: %v", user.ID, err)
+			writeError(w, http.StatusServiceUnavailable, "no available Claude accounts in your pools")
 			return
 		}
 		attemptedAccountIDs[account.ID] = struct{}{}
@@ -432,7 +430,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if r.Context().Err() != nil {
 				return // Client disconnected — not the account's fault
 			}
-			lastErr = err
+			lastErr = errors.New("could not reach Anthropic")
 			log.Printf("proxy: account %d network error: %v", account.ID, err)
 			continue
 		}
@@ -443,19 +441,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
 			log.Printf("proxy: account %d got 429, trying next account", account.ID)
-			lastErr = fmt.Errorf("account %d: rate limited", account.ID)
+			lastErr = errors.New("rate limited")
 			continue
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized {
 			resp.Body.Close()
 			log.Printf("proxy: account %d got 401 (token expired/invalid), trying next account", account.ID)
-			lastErr = fmt.Errorf("account %d: unauthorized", account.ID)
+			lastErr = errors.New("account credentials rejected")
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(modelRequest.Model), "claude-mythos-") && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound) {
 			resp.Body.Close()
-			lastErr = fmt.Errorf("account %d: model unavailable (%d)", account.ID, resp.StatusCode)
+			log.Printf("proxy: account %d: %s unavailable (%d)", account.ID, modelRequest.Model, resp.StatusCode)
+			lastErr = fmt.Errorf("model unavailable (%d)", resp.StatusCode)
 			continue
 		}
 		if modelListRequest && resp.StatusCode == http.StatusOK {
@@ -590,14 +589,13 @@ func (h *Handler) authenticate(r *http.Request) (*database.User, error) {
 	}
 
 	if token == "" {
-		log.Printf("proxy auth: no token found in request headers (x-api-key=%q, Authorization=%q)",
-			r.Header.Get("x-api-key"), r.Header.Get("Authorization"))
+		log.Printf("proxy auth: no token found in request headers")
 		return nil, errUnauthorized
 	}
 
 	var user database.User
 	if err := h.db.Where("api_token = ?", token).First(&user).Error; err != nil {
-		log.Printf("proxy auth: token not found in DB (prefix=%s...)", token[:min(len(token), 15)])
+		log.Printf("proxy auth: unknown token")
 		return nil, errUnauthorized
 	}
 
@@ -624,8 +622,7 @@ func (h *Handler) forward(r *http.Request, body []byte, accessToken string, user
 	}
 
 	for key, values := range r.Header {
-		k := strings.ToLower(key)
-		if k == "authorization" || k == "host" || k == "x-api-key" || k == "accept-encoding" {
+		if stripRequestHeader(key) {
 			continue
 		}
 		for _, v := range values {
@@ -687,6 +684,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 	defer resp.Body.Close()
 
 	for key, values := range resp.Header {
+		if !forwardResponseHeader(key) {
+			continue
+		}
 		for _, v := range values {
 			w.Header().Add(key, v)
 		}
@@ -732,7 +732,9 @@ func (h *Handler) streamResponse(w http.ResponseWriter, resp *http.Response, use
 	if !isStreaming && resp.StatusCode == http.StatusOK && cacheKey != "" && h.settings.GetInt("response_cache_ttl") > 0 {
 		headers := make(map[string][]string)
 		for k, v := range resp.Header {
-			headers[k] = v
+			if forwardResponseHeader(k) {
+				headers[k] = v
+			}
 		}
 		cachedBody := make([]byte, len(captured))
 		copy(cachedBody, captured)
@@ -954,6 +956,30 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// stripRequestHeader reports whether a client header must not reach Anthropic:
+// proxy credentials, cookies, and headers identifying the user or our infrastructure.
+func stripRequestHeader(name string) bool {
+	k := strings.ToLower(name)
+	switch k {
+	case "authorization", "x-api-key", "anthropic-auth-token", "host", "accept-encoding",
+		"cookie", "forwarded", "via", "x-real-ip", "true-client-ip", "cdn-loop":
+		return true
+	}
+	return strings.HasPrefix(k, "x-forwarded-") || strings.HasPrefix(k, "cf-")
+}
+
+// forwardResponseHeader reports whether an upstream response header may reach the
+// user; others (Set-Cookie, organization IDs…) identify the pooled account.
+func forwardResponseHeader(name string) bool {
+	k := strings.ToLower(name)
+	switch k {
+	case "content-type", "content-encoding", "cache-control", "request-id", "x-request-id",
+		"retry-after", "x-should-retry":
+		return true
+	}
+	return strings.HasPrefix(k, "anthropic-ratelimit-")
+}
 
 // allowedUpstreamRoute lists the only Anthropic endpoints users may reach with a
 // pooled account's credentials; anything else (account profile, files, batches…)

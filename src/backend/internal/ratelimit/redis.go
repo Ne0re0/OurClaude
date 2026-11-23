@@ -11,24 +11,20 @@ import (
 
 type redisLimiter struct {
 	client *redis.Client
-	rpm    float64
 }
 
-func newRedisLimiter(rpm int, redisURL string) *redisLimiter {
+func newRedisLimiter(redisURL string) *redisLimiter {
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
 		log.Fatalf("ratelimit: invalid REDIS_URL: %v", err)
 	}
-	return &redisLimiter{
-		client: redis.NewClient(opt),
-		rpm:    float64(rpm),
-	}
+	return &redisLimiter{client: redis.NewClient(opt)}
 }
 
 // Allow uses a sliding window counter in Redis.
 // Key: rl:{userID}, value: sorted set of request timestamps (ms).
-func (l *redisLimiter) Allow(userID uint) bool {
-	if l.rpm <= 0 {
+func (l *redisLimiter) Allow(userID uint, rpm int) bool {
+	if rpm <= 0 {
 		return true
 	}
 
@@ -52,5 +48,5 @@ func (l *redisLimiter) Allow(userID uint) bool {
 		return true
 	}
 
-	return countCmd.Val() < int64(l.rpm)
+	return countCmd.Val() < int64(rpm)
 }

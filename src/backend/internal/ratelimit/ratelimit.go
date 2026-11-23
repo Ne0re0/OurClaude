@@ -6,16 +6,17 @@ import (
 )
 
 // Limiter is the interface for per-user rate limiting.
+// The limit is passed on every call so changes to the runtime setting apply immediately; rpm <= 0 means unlimited.
 type Limiter interface {
-	Allow(userID uint) bool
+	Allow(userID uint, rpm int) bool
 }
 
 // New returns an in-memory limiter or a Redis-backed one if redisURL is provided.
-func New(rpm int, redisURL string) Limiter {
+func New(redisURL string) Limiter {
 	if redisURL != "" {
-		return newRedisLimiter(rpm, redisURL)
+		return newRedisLimiter(redisURL)
 	}
-	return newMemLimiter(rpm)
+	return newMemLimiter()
 }
 
 // --- in-memory token bucket ---
@@ -28,20 +29,17 @@ type bucket struct {
 type memLimiter struct {
 	mu      sync.Mutex
 	buckets map[uint]*bucket
-	rpm     float64
 }
 
-func newMemLimiter(rpm int) *memLimiter {
-	return &memLimiter{
-		buckets: make(map[uint]*bucket),
-		rpm:     float64(rpm),
-	}
+func newMemLimiter() *memLimiter {
+	return &memLimiter{buckets: make(map[uint]*bucket)}
 }
 
-func (l *memLimiter) Allow(userID uint) bool {
-	if l.rpm <= 0 {
+func (l *memLimiter) Allow(userID uint, rpm int) bool {
+	if rpm <= 0 {
 		return true
 	}
+	limit := float64(rpm)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -49,14 +47,14 @@ func (l *memLimiter) Allow(userID uint) bool {
 	now := time.Now()
 	b, ok := l.buckets[userID]
 	if !ok {
-		b = &bucket{tokens: l.rpm, lastRefil: now}
+		b = &bucket{tokens: limit, lastRefil: now}
 		l.buckets[userID] = b
 	}
 
 	elapsed := now.Sub(b.lastRefil).Minutes()
-	b.tokens += elapsed * l.rpm
-	if b.tokens > l.rpm {
-		b.tokens = l.rpm
+	b.tokens += elapsed * limit
+	if b.tokens > limit {
+		b.tokens = limit
 	}
 	b.lastRefil = now
 

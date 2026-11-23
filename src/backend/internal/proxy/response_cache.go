@@ -30,9 +30,9 @@ func newResponseCache(ttl time.Duration) *responseCache {
 	}
 }
 
-func (c *responseCache) key(userID uint, body []byte) string {
+func (c *responseCache) key(userID uint, path string, body []byte) string {
 	h := sha256.New()
-	h.Write([]byte(fmt.Sprintf("u%d:", userID)))
+	h.Write([]byte(fmt.Sprintf("u%d:%s:", userID, path)))
 	h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -61,6 +61,9 @@ func (c *responseCache) setWithTTL(key string, entry *cachedResponse, ttl time.D
 		}
 		for _, k := range expired {
 			delete(c.cache, k)
+		}
+		if len(c.cache) >= c.maxSize {
+			return
 		}
 	}
 
