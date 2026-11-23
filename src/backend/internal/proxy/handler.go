@@ -17,6 +17,7 @@ import (
 
 	"claude-proxy/internal/database"
 	"claude-proxy/internal/metrics"
+	"claude-proxy/internal/middleware"
 	"claude-proxy/internal/pool"
 	"claude-proxy/internal/ratelimit"
 	"claude-proxy/internal/sse"
@@ -967,19 +968,7 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func ipAllowed(r *http.Request, whitelist string) bool {
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
-	// Take first IP from X-Forwarded-For chain.
-	if idx := strings.Index(clientIP, ","); idx != -1 {
-		clientIP = strings.TrimSpace(clientIP[:idx])
-	}
-	// Strip port.
-	if host, _, err := net.SplitHostPort(clientIP); err == nil {
-		clientIP = host
-	}
-	ip := net.ParseIP(clientIP)
+	ip := net.ParseIP(middleware.ClientIP(r))
 	if ip == nil {
 		return false
 	}
