@@ -13,12 +13,10 @@ import (
 
 func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []database.ClaudeAccount) {
 	t.Helper()
-
 	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "selection.db"), "")
 	if err != nil {
 		t.Fatalf("create database: %v", err)
 	}
-
 	enc := crypto.NewEncryptor("selection-test-key")
 	accessToken, err := enc.Encrypt("sk-ant-oat-test")
 	if err != nil {
@@ -28,22 +26,16 @@ func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []dat
 	if err != nil {
 		t.Fatalf("encrypt refresh token: %v", err)
 	}
-
 	poolRecord := database.Pool{Name: "selection-test"}
 	if err := db.Create(&poolRecord).Error; err != nil {
 		t.Fatalf("create pool: %v", err)
 	}
-
 	accounts := make([]database.ClaudeAccount, 0, len(quotas))
 	for i, quota := range quotas {
 		account := database.ClaudeAccount{
-			Name:             fmt.Sprintf("account-%d", i+1),
-			AccessToken:      accessToken,
-			RefreshToken:     refreshToken,
-			RefreshTokenHash: fmt.Sprintf("refresh-hash-%d", i+1),
-			ExpiresAt:        time.Now().Add(time.Hour),
-			AccountType:      "oauth",
-			Status:           "active",
+			Name: fmt.Sprintf("account-%d", i+1), AccessToken: accessToken,
+			RefreshToken: refreshToken, RefreshTokenHash: fmt.Sprintf("refresh-hash-%d", i+1),
+			ExpiresAt: time.Now().Add(time.Hour), AccountType: "oauth", Status: "active",
 		}
 		if err := db.Create(&account).Error; err != nil {
 			t.Fatalf("create account: %v", err)
@@ -55,24 +47,16 @@ func newSelectionTestManager(t *testing.T, quotas ...int) (*Manager, uint, []dat
 		if quota == 100 {
 			reset = time.Now().Add(30 * time.Minute)
 		}
-		if err := db.Create(&database.AccountQuota{
-			AccountID:         account.ID,
-			FiveHourPct:       quota,
-			FiveHourAvailable: true,
-			FiveHourResets:    reset.Format(time.RFC3339),
-		}).Error; err != nil {
+		if err := db.Create(&database.AccountQuota{AccountID: account.ID, FiveHourPct: quota, FiveHourAvailable: true, FiveHourResets: reset.Format(time.RFC3339)}).Error; err != nil {
 			t.Fatalf("create account quota: %v", err)
 		}
 		accounts = append(accounts, account)
 	}
-
-	manager := New(db, oauth.New("http://unused.invalid", enc), enc, nil)
-	return manager, poolRecord.ID, accounts
+	return New(db, oauth.New("http://unused.invalid", enc), enc, nil), poolRecord.ID, accounts
 }
 
 func TestSelectionDoesNotFavorFullAccountNearReset(t *testing.T) {
 	manager, poolID, accounts := newSelectionTestManager(t, 100, 51)
-
 	selected, err := manager.GetAccountForUser([]uint{poolID})
 	if err != nil {
 		t.Fatalf("select account: %v", err)
@@ -84,9 +68,7 @@ func TestSelectionDoesNotFavorFullAccountNearReset(t *testing.T) {
 
 func TestSelectionExcludesPreviouslyAttemptedAccount(t *testing.T) {
 	manager, poolID, accounts := newSelectionTestManager(t, 10, 20)
-	excluded := map[uint]struct{}{accounts[0].ID: {}}
-
-	selected, err := manager.GetAccountForUserExcluding([]uint{poolID}, excluded)
+	selected, err := manager.GetAccountForUserExcluding([]uint{poolID}, map[uint]struct{}{accounts[0].ID: {}})
 	if err != nil {
 		t.Fatalf("select account: %v", err)
 	}
